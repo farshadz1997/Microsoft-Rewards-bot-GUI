@@ -7,7 +7,6 @@ import sys
 import time
 import urllib.parse
 from pathlib import Path
-from argparse import ArgumentParser
 from datetime import date, datetime, timedelta
 
 import ipapi
@@ -15,6 +14,7 @@ import requests
 from func_timeout import FunctionTimedOut, func_set_timeout
 from random_word import RandomWords
 from selenium import webdriver
+from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.common.exceptions import (ElementNotInteractableException,
                                         NoAlertPresentException,
                                         NoSuchElementException,
@@ -29,8 +29,6 @@ from selenium.webdriver.chrome.options import Options
 
 
 class Farmer:
-    # TODO: clear all print ops from functions
-    # TODO: clear browser from params of all functions instead use self.browser variable
     PC_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36 Edg/107.0.1418.24'
     MOBILE_USER_AGENT = 'Mozilla/5.0 (Linux; Android 12; SM-N9750) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Mobile Safari/537.36 EdgA/107.0.1418.28'
     logs: dict = {}
@@ -38,12 +36,17 @@ class Farmer:
     def __init__(self, accounts, accounts_path: str, config: dict):
         self.accounts_path = Path(accounts_path)
         self.accounts = accounts
+        self.browser: WebDriver = None
         self.config: dict = config
         self.points_counter: int = 0
         self.finished_accounts: list = [] 
+        self.locked_accounts: list = [] 
+        self.suspended_accounts: list = [] 
         self.current_account: str = None
         self.browser: WebDriver = None
         self.lang: str = None
+        self.get_or_create_logs()
+        self.lang, self.geo, self.tz = self.get_ccode_lang_and_offset()
     
     def check_internet_connection(self):
         system = platform.system()
@@ -65,9 +68,9 @@ class Farmer:
         shared_items =[]
         try:
             # Read datas on 'logs_accounts.txt'
-            self.logs = json.load(open(f"{self.accounts_path}/Logs_{self.accounts_path.stem}.txt", "r"))
+            self.logs = json.load(open(f"{self.accounts_path.parent}/Logs_{self.accounts_path.stem}.txt", "r"))
             # delete Time period from logs
-            self.logs.pop("Time period", None)
+            self.logs.pop("Elapsed time", None)
             # sync accounts and logs file for new accounts or remove accounts from logs.
             for user in self.accounts:
                 shared_items.append(user['username'])
@@ -85,7 +88,7 @@ class Farmer:
                 if self.logs[account]["Last check"] == str(date.today()) and list(self.logs[account].keys()) == ['Last check', "Today's points", 'Points']:
                     self.finished_accounts.append(account)
                 elif self.logs[account]['Last check'] == 'Your account has been suspended':
-                    self.finished_accounts.append(account)
+                    self.suspended_accounts.append(account)
                 elif self.logs[account]['Last check'] == str(date.today()) and list(self.logs[account].keys()) == ['Last check', "Today's points", 'Points',
                                                                                                         'Daily', 'Punch cards', 'More promotions', 'PC searches']:
                     continue
@@ -94,9 +97,8 @@ class Farmer:
                     self.logs[account]['Punch cards'] = False
                     self.logs[account]['More promotions'] = False
                     self.logs[account]['PC searches'] = False 
-            self.update_logs()               
+            self.update_logs()       
         except FileNotFoundError:
-            LOGS = {}
             for account in self.accounts:
                 self.logs[account["username"]] = {"Last check": "",
                                             "Today's points": 0,
@@ -138,9 +140,9 @@ class Farmer:
         options = Options()
         if self.config.get("session", False):
             if not isMobile:
-                options.add_argument(f'--user-data-dir={Path(__file__).parent}/Profiles/{self.current_account}/PC')
+                options.add_argument(f'--user-data-dir={self.accounts_path.parent}/Profiles/{self.current_account}/PC')
             else:
-                options.add_argument(f'--user-data-dir={Path(__file__).parent}/Profiles/{self.current_account}/Mobile')
+                options.add_argument(f'--user-data-dir={self.accounts_path.parent}/Profiles/{self.current_account}/Mobile')
         options.add_argument("user-agent=" + user_agent)
         options.add_argument('lang=' + self.lang.split("-")[0])
         options.add_argument('--disable-blink-features=AutomationControlled')
@@ -157,14 +159,17 @@ class Farmer:
             options.add_argument("--headless")
         options.add_argument('log-level=3')
         options.add_argument("--start-maximized")
+        chrome_service = ChromeService()
         if platform.system() == 'Linux':
             options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
-        chrome_browser_obj = webdriver.Chrome(options=options)
+        if platform.system() == 'Windows':
+            chrome_service.creationflags = subprocess.CREATE_NO_WINDOW
+        chrome_browser_obj = webdriver.Chrome(options=options, service=chrome_service)
         self.browser = chrome_browser_obj
         return self.browser
     
-    def login(self, browser: WebDriver, email: str, pwd: str, isMobile: bool = False):
+    def login(self, email: str, pwd: str, isMobile: bool = False):
         """Login into  Microsoft account"""
         # Close welcome tab for new sessions
         if self.config.get("session", False):
@@ -186,10 +191,8 @@ class Farmer:
                 self.browser.find_element(By.ID, 'iNext').click()
                 time.sleep(5)
             if self.browser.title == 'Microsoft account | Home' or self.is_element_exists(By.ID, 'navs_container'):
-                # prGreen('[LOGIN] Account already logged in !')
-                self.rewards_login(self.browser)
-                print('[LOGIN]', 'Ensuring login on Bing...')
-                self.check_bing_login(self.browser, isMobile)
+                self.rewards_login()
+                self.check_bing_login(isMobile)
                 return
             elif self.browser.title == 'Your account has been temporarily suspended':
                 self.logs[self.current_account]['Last check'] = 'Your account has been locked !'
@@ -198,20 +201,17 @@ class Farmer:
                 self.clean_logs()
                 raise Exception('Your account has been locked !')
         # Wait complete loading
-        self.wait_until_visible(self.browser, By.ID, 'loginHeader', 10)
+        self.wait_until_visible(By.ID, 'loginHeader', 10)
         # Enter email
-        print('[LOGIN]', 'Writing email...')
         self.browser.find_element(By.NAME, "loginfmt").send_keys(email)
         # Click next
         self.browser.find_element(By.ID, 'idSIButton9').click()
         # Wait 2 seconds
         time.sleep(5 if not self.config["globalOptions"]["fast"] else 2)
         # Wait complete loading
-        self.wait_until_visible(self.browser, By.ID, 'loginHeader', 10)
+        self.wait_until_visible(By.ID, 'loginHeader', 10)
         # Enter password
         self.browser.find_element(By.ID, "i0118").send_keys(pwd)
-        # self.browser.execute_script("document.getElementById('i0118').value = '" + pwd + "';")
-        print('[LOGIN]', 'Writing password...')
         # Click next
         self.browser.find_element(By.ID, 'idSIButton9').click()
         # Wait 5 seconds
@@ -236,23 +236,20 @@ class Farmer:
                 self.clean_logs()
                 raise Exception('[ERROR] Your account has been locked !')
             elif self.browser.title == "Help us protect your account":
-                # prRed('[ERROR] Unusual activity detected !')
                 self.logs[self.current_account]['Last check'] = 'Unusual activity detected !'
                 self.finished_accounts.append(self.current_account)       
                 self.update_logs()
                 self.clean_logs()
-                input('Press any key to close...')
                 os._exit(0)
             else:
                 self.logs[self.current_account]['Last check'] = 'Unknown error !'
                 self.finished_accounts.append(self.current_account)
                 self.update_logs()
                 self.clean_logs()
-                raise Exception('[ERROR] Unknown error !')
+                raise Exception('Unknown error !')
         # Wait 5 seconds
         time.sleep(5)
         # Click Security Check
-        print('[LOGIN]', 'Passing security checks...')
         try:
             self.browser.find_element(By.ID, 'iLandingViewAction').click()
         except (NoSuchElementException, ElementNotInteractableException) as e:
@@ -269,17 +266,14 @@ class Farmer:
             time.sleep(5)
         except (NoSuchElementException, ElementNotInteractableException) as e:
             pass
-        print('[LOGIN]', 'Logged-in !')
         # Check Microsoft Rewards
-        print('[LOGIN] Logging into Microsoft Rewards...')
-        self.rewards_login(self.browser)
+        self.rewards_login()
         # Check Login
-        print('[LOGIN]', 'Ensuring login on Bing...')
-        self.check_bing_login(self.browser, isMobile)
+        self.check_bing_login(isMobile)
 
-    def rewards_login(self, browser: WebDriver):
+    def rewards_login(self):
         #Login into Rewards
-        self.browser.get('https://rewards.microsoft.com/dashboard')
+        self.browser.get('https://rewards.microsoft.com/')
         try:
             time.sleep(10 if not self.config["globalOptions"] else 5)
             self.browser.find_element(By.ID, 'raf-signin-link-id').click()
@@ -300,14 +294,12 @@ class Farmer:
                 raise Exception('Your Microsoft Rewards account has been suspended !')
             # Check whether Rewards is available in your region or not
             elif self.browser.find_element(By.XPATH, '//*[@id="error"]/h1').get_attribute('innerHTML') == 'Microsoft Rewards is not available in this country or region.':
-                # prRed('[ERROR] Microsoft Rewards is not available in this country or region !')
-                input('[ERROR] Press any key to close...')
                 os._exit()
         except NoSuchElementException:
             pass
 
     @func_set_timeout(300)
-    def check_bing_login(self, browser: WebDriver, isMobile: bool = False):
+    def check_bing_login(self, isMobile: bool = False):
         #Access Bing.com
         self.browser.get('https://bing.com/')
         # Wait 15 seconds
@@ -322,7 +314,7 @@ class Farmer:
                         if self.browser.find_element(By.ID, 'id_s').is_displayed():
                             self.browser.find_element(By.ID, 'id_s').click()
                             time.sleep(15)
-                            self.check_bing_login(self.browser, isMobile)
+                            self.check_bing_login(isMobile)
                         time.sleep(2)
                         self.points_counter = int(self.browser.find_element(By.ID, "id_rc").get_attribute("innerHTML").replace(",", ""))
                 else:
@@ -394,7 +386,7 @@ class Farmer:
                     if self.browser.find_element(By.ID, 'id_s').is_displayed():
                         self.browser.find_element(By.ID, 'id_s').click()
                         time.sleep(15)
-                        self.check_bing_login(self.browser, isMobile)
+                        self.check_bing_login(isMobile)
                     time.sleep(5)
                     self.points_counter = int(self.browser.find_element(By.ID, "id_rc").get_attribute("innerHTML").replace(",", ""))
             else:
@@ -412,15 +404,15 @@ class Farmer:
                 time.sleep(1)
                 self.points_counter = int(self.browser.find_element(By.ID, 'fly_id_rc').get_attribute('innerHTML'))
         except:
-            self.check_bing_login(self.browser, isMobile)
+            self.check_bing_login(isMobile)
             
-    def wait_until_visible(self, browser: WebDriver, by_: By, selector: str, time_to_wait: int = 10):
+    def wait_until_visible(self, by_: By, selector: str, time_to_wait: int = 10):
         WebDriverWait(self.browser, time_to_wait).until(ec.visibility_of_element_located((by_, selector)))
 
-    def wait_until_clickable(self, browser: WebDriver, by_: By, selector: str, time_to_wait: int = 10):
+    def wait_until_clickable(self, by_: By, selector: str, time_to_wait: int = 10):
         WebDriverWait(self.browser, time_to_wait).until(ec.element_to_be_clickable((by_, selector)))
 
-    def wait_until_question_refresh(self, browser: WebDriver):
+    def wait_until_question_refresh(self):
         tries = 0
         refreshCount = 0
         while True:
@@ -440,7 +432,7 @@ class Farmer:
                     else:
                         return False
 
-    def wait_until_quiz_loads(self, browser: WebDriver):
+    def wait_until_quiz_loads(self):
         tries = 0
         refreshCount = 0
         while True:
@@ -460,21 +452,21 @@ class Farmer:
                     else:
                         return False
 
-    def get_dashboard_data(self, browser: WebDriver) -> dict:
+    def get_dashboard_data(self) -> dict:
         dashboard = self.find_between(self.browser.find_element(By.XPATH, '/html/body').get_attribute('innerHTML'), "var dashboard = ", ";\n        appDataModule.constant(\"prefetchedDashboard\", dashboard);")
         dashboard = json.loads(dashboard)
         return dashboard
     
-    def get_account_points(self, browser: WebDriver) -> int:
-        return self.get_dashboard_data(self.browser)['userStatus']['availablePoints']
+    def get_account_points(self) -> int:
+        return self.get_dashboard_data()['userStatus']['availablePoints']
     
     def get_ccode_lang_and_offset(self) -> tuple:
         try:
             nfo = ipapi.location()
-            self.lang = nfo['languages'].split(',')[0]
-            self.geo = nfo['country']
-            self.tz = str(round(int(nfo['utc_offset']) / 100 * 60))
-            return(self.lang, self.geo, self.tz)
+            lang = nfo['languages'].split(',')[0]
+            geo = nfo['country']
+            tz = str(round(int(nfo['utc_offset']) / 100 * 60))
+            return(lang, geo, tz)
         except:
             return('en-US', 'US', '-480')
         
@@ -500,7 +492,7 @@ class Farmer:
         except:
             return []
         
-    def reset_tabs(self, browser: WebDriver):
+    def reset_tabs(self):
         try:
             curr = self.browser.current_window_handle
 
@@ -525,7 +517,7 @@ class Farmer:
         t += int(key[-2:], 16)
         return str(t)
     
-    def bing_searches(self, browser: WebDriver, numberOfSearches: int, isMobile: bool = False):
+    def bing_searches(self, numberOfSearches: int, isMobile: bool = False):
         i = 0
         r = RandomWords()
         search_terms = r.get_random_words(limit = numberOfSearches)
@@ -533,12 +525,11 @@ class Farmer:
             search_terms = self.get_google_trends(numberOfSearches)
         for word in search_terms:
             i += 1
-            print('[BING]', str(i) + "/" + str(numberOfSearches))
-            points = self.bing_search(self.browser, word, isMobile)
+            points = self.bing_search(word, isMobile)
             if points <= self.points_counter :
                 relatedTerms = self.get_related_terms(word)
                 for term in relatedTerms :
-                    points = self.bing_search(self.browser, term, isMobile)
+                    points = self.bing_search(term, isMobile)
                     if points >= self.points_counter:
                         break
             if points > 0:
@@ -546,7 +537,7 @@ class Farmer:
             else:
                 break
             
-    def bing_search(self, browser: WebDriver, word: str, isMobile: bool):
+    def bing_search(self, word: str, isMobile: bool):
         try:
             if not isMobile:
                 self.browser.find_element(By.ID, 'sb_form_q').clear()
@@ -589,9 +580,9 @@ class Farmer:
             pass
         return points
     
-    def complete_promotional_items(self, browser: WebDriver):
+    def complete_promotional_items(self):
         try:
-            item = self.get_dashboard_data(self.browser)["promotionalItem"]
+            item = self.get_dashboard_data()["promotionalItem"]
             if (item["pointProgressMax"] == 100 or item["pointProgressMax"] == 200) and item["complete"] == False and item["destinationUrl"] == "https://rewards.microsoft.com/":
                 self.browser.find_element(By.XPATH, '//*[@id="promo-item"]/section/div/div/div/a').click()
                 time.sleep(1)
@@ -604,7 +595,7 @@ class Farmer:
         except:
             pass
         
-    def complete_daily_set_search(self, browser: WebDriver, cardNumber: int):
+    def complete_daily_set_search(self, cardNumber: int):
         time.sleep(5)
         self.browser.find_element(By.XPATH, f'//*[@id="app-host"]/ui-view/mee-rewards-dashboard/main/div/mee-rewards-daily-set-section/div/mee-card-group/div/mee-card[{str(cardNumber)}]/div/card-content/mee-rewards-daily-set-item-content/div/a/div/span').click()
         time.sleep(1)
@@ -615,7 +606,7 @@ class Farmer:
         self.browser.switch_to.window(window_name = self.browser.window_handles[0])
         time.sleep(2)
         
-    def complete_daily_set_survey(self, browser: WebDriver, cardNumber: int):
+    def complete_daily_set_survey(self, cardNumber: int):
         time.sleep(5)
         self.browser.find_element(By.XPATH, f'//*[@id="app-host"]/ui-view/mee-rewards-dashboard/main/div/mee-rewards-daily-set-section/div/mee-card-group/div/mee-card[{str(cardNumber)}]/div/card-content/mee-rewards-daily-set-item-content/div/a/div/span').click()
         time.sleep(1)
@@ -636,21 +627,21 @@ class Farmer:
         self.browser.switch_to.window(window_name = self.browser.window_handles[0])
         time.sleep(2)
         
-    def complete_daily_set_quiz(self, browser: WebDriver, cardNumber: int):
+    def complete_daily_set_quiz(self, cardNumber: int):
         time.sleep(5)
         self.browser.find_element(By.XPATH, f'//*[@id="app-host"]/ui-view/mee-rewards-dashboard/main/div/mee-rewards-daily-set-section[1]/div/mee-card-group[1]/div[1]/mee-card[{str(cardNumber)}]/div[1]/card-content[1]/mee-rewards-daily-set-item-content[1]/div[1]/a[1]/div[3]/span[1]').click()
         time.sleep(3)
         self.browser.switch_to.window(window_name = self.browser.window_handles[1])
         time.sleep(12 if not self.config["globalOptions"]["fast"] else random.randint(5, 8))
-        if not self.wait_until_quiz_loads(self.browser):
-            self.reset_tabs(self.browser)
+        if not self.wait_until_quiz_loads():
+            self.reset_tabs()
             return
         # Accept cookie popup
         if self.is_element_exists(By.ID, 'bnp_container'):
             self.browser.find_element(By.ID, 'bnp_btn_accept').click()
             time.sleep(2)
         self.browser.find_element(By.XPATH, '//*[@id="rqStartQuiz"]').click()
-        self.wait_until_visible(self.browser, By.XPATH, '//*[@id="currentQuestionContainer"]/div/div[1]', 10)
+        self.wait_until_visible(By.XPATH, '//*[@id="currentQuestionContainer"]/div/div[1]', 10)
         time.sleep(3)
         numberOfQuestions = self.browser.execute_script("return _w.rewardsQuizRenderInfo.maxQuestions")
         numberOfOptions = self.browser.execute_script("return _w.rewardsQuizRenderInfo.numberOfOptions")
@@ -667,7 +658,7 @@ class Farmer:
                         time.sleep(2)
                     self.browser.find_element(By.ID, answer).click()
                     time.sleep(5)
-                    if not self.wait_until_question_refresh(self.browser):
+                    if not self.wait_until_question_refresh():
                         return
                 time.sleep(5)
             elif numberOfOptions == 4:
@@ -690,7 +681,7 @@ class Farmer:
         self.browser.switch_to.window(window_name = self.browser.window_handles[0])
         time.sleep(2)
 
-    def complete_daily_set_variable_activity(self, browser: WebDriver, cardNumber: int):
+    def complete_daily_set_variable_activity(self, cardNumber: int):
         time.sleep(2)
         self.browser.find_element(By.XPATH, f'//*[@id="app-host"]/ui-view/mee-rewards-dashboard/main/div/mee-rewards-daily-set-section/div/mee-card-group/div/mee-card[{str(cardNumber)}]/div/card-content/mee-rewards-daily-set-item-content/div/a/div/span').click()
         time.sleep(1)
@@ -702,7 +693,7 @@ class Farmer:
             time.sleep(2)
         try :
             self.browser.find_element(By.XPATH, '//*[@id="rqStartQuiz"]').click()
-            self.wait_until_visible(self.browser, By.XPATH, '//*[@id="currentQuestionContainer"]/div/div[1]', 3)
+            self.wait_until_visible(By.XPATH, '//*[@id="currentQuestionContainer"]/div/div[1]', 3)
         except (NoSuchElementException, TimeoutException):
             try:
                 counter = str(self.browser.find_element(By.XPATH, '//*[@id="QuestionPane0"]/div[2]').get_attribute('innerHTML'))[:-1][1:]
@@ -740,7 +731,7 @@ class Farmer:
         self.browser.switch_to.window(window_name = self.browser.window_handles[0])
         time.sleep(2)
         
-    def complete_daily_set_this_or_that(self, browser: WebDriver, cardNumber: int):
+    def complete_daily_set_this_or_that(self, cardNumber: int):
         time.sleep(2)
         self.browser.find_element(By.XPATH, f'//*[@id="app-host"]/ui-view/mee-rewards-dashboard/main/div/mee-rewards-daily-set-section/div/mee-card-group/div/mee-card[{str(cardNumber)}]/div/card-content/mee-rewards-daily-set-item-content/div/a/div/span').click()
         time.sleep(1)
@@ -754,7 +745,7 @@ class Farmer:
             self.reset_tabs(self.browser)
             return
         self.browser.find_element(By.XPATH, '//*[@id="rqStartQuiz"]').click()
-        self.wait_until_visible(self.browser, By.XPATH, '//*[@id="currentQuestionContainer"]/div/div[1]', 10)
+        self.wait_until_visible(By.XPATH, '//*[@id="currentQuestionContainer"]/div/div[1]', 10)
         time.sleep(5)
         for _ in range(10):
             # Click on later on Bing wallpaper app popup
@@ -787,8 +778,7 @@ class Farmer:
         self.browser.switch_to.window(window_name=self.browser.window_handles[0])
         time.sleep(2)
     
-    def complete_daily_set(self, browser: WebDriver):
-        print('[DAILY SET]', 'Trying to complete the Daily Set...')
+    def complete_daily_set(self, ):
         d = self.get_dashboard_data(self.browser)
         error = False
         todayDate = datetime.today().strftime('%m/%d/%Y')
@@ -801,15 +791,15 @@ class Farmer:
                 if activity['complete'] == False:
                     cardNumber = int(activity['offerId'][-1:])
                     if activity['promotionType'] == "urlreward":
-                        print('[DAILY SET]', 'Completing search of card ' + str(cardNumber))
-                        self.complete_daily_set_search(self.browser, cardNumber)
+                        # print('[DAILY SET]', 'Completing search of card ' + str(cardNumber))
+                        self.complete_daily_set_search(cardNumber)
                     if activity['promotionType'] == "quiz":
                         if activity['pointProgressMax'] == 50 and activity['pointProgress'] == 0:
-                            print('[DAILY SET]', 'Completing This or That of card ' + str(cardNumber))
-                            self.complete_daily_set_this_or_that(self.browser, cardNumber)
+                            # print('[DAILY SET]', 'Completing This or That of card ' + str(cardNumber))
+                            self.complete_daily_set_this_or_that(cardNumber)
                         elif (activity['pointProgressMax'] == 40 or activity['pointProgressMax'] == 30) and activity['pointProgress'] == 0:
-                            print('[DAILY SET]', 'Completing quiz of card ' + str(cardNumber))
-                            self.complete_daily_set_quiz(self.browser, cardNumber)
+                            # print('[DAILY SET]', 'Completing quiz of card ' + str(cardNumber))
+                            self.complete_daily_set_quiz(cardNumber)
                         elif activity['pointProgressMax'] == 10 and activity['pointProgress'] == 0:
                             searchUrl = urllib.parse.unquote(urllib.parse.parse_qs(urllib.parse.urlparse(activity['destinationUrl']).query)['ru'][0])
                             searchUrlQueries = urllib.parse.parse_qs(urllib.parse.urlparse(searchUrl).query)
@@ -818,18 +808,18 @@ class Farmer:
                                 filter = filter.split(':', 1)
                                 filters[filter[0]] = filter[1]
                             if "PollScenarioId" in filters:
-                                print('[DAILY SET]', 'Completing poll of card ' + str(cardNumber))
-                                self.complete_daily_set_survey(self.browser, cardNumber)
+                                # print('[DAILY SET]', 'Completing poll of card ' + str(cardNumber))
+                                self.complete_daily_set_survey(cardNumber)
                             else:
-                                print('[DAILY SET]', 'Completing quiz of card ' + str(cardNumber))
-                                self.complete_daily_set_variable_activity(self.browser, cardNumber)
+                                # print('[DAILY SET]', 'Completing quiz of card ' + str(cardNumber))
+                                self.complete_daily_set_variable_activity(cardNumber)
             except:
                 error = True
-                self.reset_tabs(self.browser)
+                self.reset_tabs()
         self.logs[self.current_account]['Daily'] = True
         self.update_logs() 
         
-    def complete_punch_card(self, browser: WebDriver, url: str, childPromotions: dict):
+    def complete_punch_card(self, url: str, childPromotions: dict):
         self.browser.get(url)
         for child in childPromotions:
             if child['complete'] == False:
@@ -852,7 +842,7 @@ class Farmer:
                     except:
                         pass
                     time.sleep(5)
-                    self.wait_until_visible(self.browser, By.XPATH, '//*[@id="currentQuestionContainer"]', 10)
+                    self.wait_until_visible(By.XPATH, '//*[@id="currentQuestionContainer"]', 10)
                     numberOfQuestions = self.browser.execute_script("return _w.rewardsQuizRenderInfo.maxQuestions")
                     AnswerdQuestions = self.browser.execute_script("return _w.rewardsQuizRenderInfo.CorrectlyAnsweredQuestionCount")
                     numberOfQuestions -= AnswerdQuestions
@@ -885,9 +875,8 @@ class Farmer:
                     self.browser.refresh()
                     break
                 
-    def complete_punch_cards(self, browser: WebDriver):
-        print('[PUNCH CARDS]', 'Trying to complete the Punch Cards...')
-        punchCards = self.get_dashboard_data(self.browser)['punchCards']
+    def complete_punch_cards(self, ):
+        punchCards = self.get_dashboard_data()['punchCards']
         for punchCard in punchCards:
             try:
                 if punchCard['parentPromotion'] != None and punchCard['childPromotions'] != None and punchCard['parentPromotion']['complete'] == False and punchCard['parentPromotion']['pointProgressMax'] != 0:
@@ -902,7 +891,7 @@ class Farmer:
                         new_url = 'https://account.microsoft.com/rewards/dashboard/'
                         userCode = path[:4]
                         dest = new_url + userCode + path.split(userCode)[1]
-                    self.complete_punch_card(self.browser, dest, punchCard['childPromotions'])
+                    self.complete_punch_card(dest, punchCard['childPromotions'])
             except:
                 self.reset_tabs(self.browser)
         time.sleep(2)
@@ -911,7 +900,7 @@ class Farmer:
         self.logs[self.current_account]['Punch cards'] = True
         self.update_logs()
         
-    def complete_more_promotion_search(self, browser: WebDriver, cardNumber: int):
+    def complete_more_promotion_search(self, cardNumber: int):
         self.browser.find_element(By.XPATH, f'//*[@id="app-host"]/ui-view/mee-rewards-dashboard/main/div/mee-rewards-more-activities-card/mee-card-group/div/mee-card[{str(cardNumber)}]/div/card-content/mee-rewards-more-activities-card-item/div/a/div/span').click()
         time.sleep(1)
         self.browser.switch_to.window(window_name = self.browser.window_handles[1])
@@ -921,18 +910,18 @@ class Farmer:
         self.browser.switch_to.window(window_name = self.browser.window_handles[0])
         time.sleep(2)
         
-    def complete_more_promotion_quiz(self, browser: WebDriver, cardNumber: int):
+    def complete_more_promotion_quiz(self, cardNumber: int):
         self.browser.find_element(By.XPATH, f'//*[@id="app-host"]/ui-view/mee-rewards-dashboard/main/div/mee-rewards-more-activities-card/mee-card-group/div/mee-card[{str(cardNumber)}]/div/card-content/mee-rewards-more-activities-card-item/div/a/div/span').click()
         time.sleep(1)
         self.browser.switch_to.window(window_name=self.browser.window_handles[1])
         time.sleep(8 if not self.config["globalOptions"] else 5)
-        if not self.wait_until_quiz_loads(self.browser):
-            self.reset_tabs(self.browser)
+        if not self.wait_until_quiz_loads():
+            self.reset_tabs()
             return
         CurrentQuestionNumber = self.browser.execute_script("return _w.rewardsQuizRenderInfo.currentQuestionNumber")
         if CurrentQuestionNumber == 1 and self.is_element_exists(By.XPATH, '//*[@id="rqStartQuiz"]'):
             self.browser.find_element(By.XPATH, '//*[@id="rqStartQuiz"]').click()
-        self.wait_until_visible(self.browser, By.XPATH, '//*[@id="currentQuestionContainer"]/div/div[1]', 10)
+        self.wait_until_visible(By.XPATH, '//*[@id="currentQuestionContainer"]/div/div[1]', 10)
         time.sleep(3)
         numberOfQuestions = self.browser.execute_script("return _w.rewardsQuizRenderInfo.maxQuestions")
         Questions = numberOfQuestions - CurrentQuestionNumber + 1
@@ -946,7 +935,7 @@ class Farmer:
                 for answer in answers:
                     self.browser.find_element(By.ID, answer).click()
                     time.sleep(5)
-                    if not self.wait_until_question_refresh(self.browser):
+                    if not self.wait_until_question_refresh():
                         return
                 time.sleep(5)
             elif numberOfOptions == 4:
@@ -955,7 +944,7 @@ class Farmer:
                     if self.browser.find_element(By.ID, "rqAnswerOption" + str(i)).get_attribute("data-option") == correctOption:
                         self.browser.find_element(By.ID, "rqAnswerOption" + str(i)).click()
                         time.sleep(5)
-                        if not self.wait_until_question_refresh(self.browser):
+                        if not self.wait_until_question_refresh():
                             return
                         break
                 time.sleep(5)
@@ -965,7 +954,7 @@ class Farmer:
         self.browser.switch_to.window(window_name=self.browser.window_handles[0])
         time.sleep(2)
         
-    def complete_more_promotion_ABC(self, browser: WebDriver, cardNumber: int):
+    def complete_more_promotion_ABC(self, cardNumber: int):
         self.browser.find_element(By.XPATH, f'//*[@id="app-host"]/ui-view/mee-rewards-dashboard/main/div/mee-rewards-more-activities-card/mee-card-group/div/mee-card[{str(cardNumber)}]/div/card-content/mee-rewards-more-activities-card-item/div/a/div/span').click()
         time.sleep(1)
         self.browser.switch_to.window(window_name=self.browser.window_handles[1])
@@ -981,19 +970,19 @@ class Farmer:
         self.browser.switch_to.window(window_name=self.browser.window_handles[0])
         time.sleep(2)
         
-    def complete_more_promotion_this_or_that(self, browser: WebDriver, cardNumber: int):
+    def complete_more_promotion_this_or_that(self, cardNumber: int):
         self.browser.find_element(By.XPATH, f'//*[@id="app-host"]/ui-view/mee-rewards-dashboard/main/div/mee-rewards-more-activities-card/mee-card-group/div/mee-card[{str(cardNumber)}]/div/card-content/mee-rewards-more-activities-card-item/div/a/div/span').click()
         time.sleep(1)
         self.browser.switch_to.window(window_name=self.browser.window_handles[1])
         time.sleep(8 if not self.config["globalOptions"]["fast"] else 5)
-        if not self.wait_until_quiz_loads(self.browser):
+        if not self.wait_until_quiz_loads():
             self.reset_tabs(self.browser)
             return
         CrrentQuestionNumber = self.browser.execute_script("return _w.rewardsQuizRenderInfo.currentQuestionNumber")
         NumberOfQuestionsLeft = 10 - CrrentQuestionNumber + 1
         if CrrentQuestionNumber == 1 and self.is_element_exists(By.XPATH, '//*[@id="rqStartQuiz"]'):
             self.browser.find_element(By.XPATH, '//*[@id="rqStartQuiz"]').click()
-        self.wait_until_visible(self.browser, By.XPATH, '//*[@id="currentQuestionContainer"]/div/div[1]', 10)
+        self.wait_until_visible(By.XPATH, '//*[@id="currentQuestionContainer"]/div/div[1]', 10)
         time.sleep(3)
         for _ in range(NumberOfQuestionsLeft):
             answerEncodeKey = self.browser.execute_script("return _G.IG")
@@ -1021,36 +1010,36 @@ class Farmer:
         self.browser.switch_to.window(window_name=self.browser.window_handles[0])
         time.sleep(2)
         
-    def complete_more_promotions(self, browser: WebDriver):
-        print('[MORE PROMO]', 'Trying to complete More Promotions...')
-        morePromotions = self.get_dashboard_data(self.browser)['morePromotions']
+    def complete_more_promotions(self, ):
+        # print('[MORE PROMO]', 'Trying to complete More Promotions...')
+        morePromotions = self.get_dashboard_data()['morePromotions']
         i = 0
         for promotion in morePromotions:
             try:
                 i += 1
                 if promotion['complete'] == False and promotion['pointProgressMax'] != 0:
                     if promotion['promotionType'] == "urlreward":
-                        self.complete_more_promotion_search(self.browser, i)
+                        self.complete_more_promotion_search(i)
                     elif promotion['promotionType'] == "quiz":
                         if promotion['pointProgressMax'] == 10:
-                            self.complete_more_promotion_ABC(self.browser, i)
+                            self.complete_more_promotion_ABC(i)
                         elif promotion['pointProgressMax'] == 30 or promotion['pointProgressMax'] == 40:
-                            self.complete_more_promotion_quiz(self.browser, i)
+                            self.complete_more_promotion_quiz(i)
                         elif promotion['pointProgressMax'] == 50:
-                            self.complete_more_promotion_this_or_that(self.browser, i)
+                            self.complete_more_promotion_this_or_that(i)
                     else:
                         if promotion['pointProgressMax'] == 100 or promotion['pointProgressMax'] == 200:
-                            self.complete_more_promotion_search(self.browser, i)
+                            self.complete_more_promotion_search(i)
                 if promotion['complete'] == False and promotion['pointProgressMax'] == 100 and promotion['promotionType'] == "" \
                     and promotion['destinationUrl'] == "https://rewards.microsoft.com":
-                    self.complete_more_promotion_search(self.browser, i)
+                    self.complete_more_promotion_search(i)
             except:
-                self.reset_tabs(self.browser)
+                self.reset_tabs()
         self.logs[self.current_account]['More promotions'] = True
         self.update_logs()
         
-    def get_remaining_searches(self, browser: WebDriver):
-        dashboard = self.get_dashboard_data(self.browser)
+    def get_remaining_searches(self):
+        dashboard = self.get_dashboard_data()
         searchPoints = 1
         counters = dashboard['userStatus']['counters']
         if not 'pcSearch' in counters:
