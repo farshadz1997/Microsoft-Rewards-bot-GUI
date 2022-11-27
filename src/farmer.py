@@ -8,6 +8,8 @@ import time
 import urllib.parse
 from pathlib import Path
 from datetime import date, datetime, timedelta
+from notifiers import get_notifier
+from PyQt5.QtCore import QObject, pyqtSignal
 
 import ipapi
 import requests
@@ -28,25 +30,60 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.chrome.options import Options
 
 
-class Farmer:
+class Farmer(QObject):
+    finished = pyqtSignal()
+    points = pyqtSignal(int)
+    section = pyqtSignal(str)
+    detail = pyqtSignal(str)
     PC_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36 Edg/107.0.1418.24'
     MOBILE_USER_AGENT = 'Mozilla/5.0 (Linux; Android 12; SM-N9750) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Mobile Safari/537.36 EdgA/107.0.1418.28'
     logs: dict = {}
     
-    def __init__(self, accounts, accounts_path: str, config: dict):
-        self.accounts_path = Path(accounts_path)
-        self.accounts = accounts
+    def __init__(self, ui):
+        super(Farmer, self).__init__()
+        self.ui = ui
+        self.accounts = ui.accounts
+        self.config: dict = self.ui.config
+        self.accounts_path = Path(self.ui.accounts_lineedit.text())
         self.browser: WebDriver = None
-        self.config: dict = config
         self.points_counter: int = 0
         self.finished_accounts: list = [] 
         self.locked_accounts: list = [] 
         self.suspended_accounts: list = [] 
         self.current_account: str = None
         self.browser: WebDriver = None
-        self.lang: str = None
         self.get_or_create_logs()
         self.lang, self.geo, self.tz = self.get_ccode_lang_and_offset()
+    
+    def create_message(self):
+        today = date.today().strftime("%d/%m/%Y")
+        message = f'📅 Daily report {today}\n\n'
+        for index, value in enumerate(self.logs.items(), 1):
+            if value[1]['Last check'] == str(date.today()):
+                status = '✅ Farmed'
+                new_points = value[1]["Today's points"]
+                total_points = value[1]["Points"]
+                message += f"{index}. {value[0]}\n📝 Status: {status}\n⭐️ Today's points: {new_points}\n🏅 Total points: {total_points}\n\n"        
+            elif value[1]['Last check'] == 'Your account has been suspended':
+                status = '❌ Suspended'
+                message += f"{index}. {value[0]}\n📝 Status: {status}\n\n"
+            elif value[1]['Last check'] == 'Your account has been locked !':
+                status = '⚠️ Locked'
+                message += f"{index}. {value[0]}\n📝 Status: {status}\n\n"
+            elif value[1]['Last check'] == 'Unusual activity detected !':
+                status = '⚠️ Unusual activity detected'
+                message += f"{index}. {value[0]}\n📝 Status: {status}\n\n"
+            elif value[1]['Last check'] == 'Unknown error !':
+                status = '⛔️ Unknow error occured'
+                message += f"{index}. {value[0]}\n📝 Status: {status}\n\n"
+            else:
+                status = '⛔️ Unknow error occured'
+                message += f"{index}. {value[0]}\n📝 Status: {status}\n\n"   
+        return message
+
+    def send_report_to_telegram(self, message):
+        t = get_notifier('telegram') 
+        t.notify(message=message, token=self.config["telegram"]["token"], chat_id=self.config["telegram"]["chatID"])
     
     def check_internet_connection(self):
         system = platform.system()
@@ -138,7 +175,7 @@ class Farmer:
     def browser_setup(self, isMobile: bool = False, user_agent = PC_USER_AGENT):
         # Create Chrome browser
         options = Options()
-        if self.config.get("session", False):
+        if self.config["globalOptions"]["session"]:
             if not isMobile:
                 options.add_argument(f'--user-data-dir={self.accounts_path.parent}/Profiles/{self.current_account}/PC')
             else:
@@ -172,7 +209,8 @@ class Farmer:
     def login(self, email: str, pwd: str, isMobile: bool = False):
         """Login into  Microsoft account"""
         # Close welcome tab for new sessions
-        if self.config.get("session", False):
+        self.section.emit("Logging in...")
+        if self.config["globalOptions"]["session"]:
             time.sleep(2)
             if len(self.browser.window_handles) > 1:
                 current_window = self.browser.current_window_handle
@@ -185,7 +223,7 @@ class Farmer:
         # Access to bing.com
         self.browser.get('https://login.live.com/')
         # Check if account is already logged in
-        if self.config.get("session", False):
+        if self.config["globalOptions"]["session"]:
             if self.browser.title == "We're updating our terms" or self.is_element_exists(By.ID, 'iAccrualForm'):
                 time.sleep(2)
                 self.browser.find_element(By.ID, 'iNext').click()
@@ -267,15 +305,17 @@ class Farmer:
         except (NoSuchElementException, ElementNotInteractableException) as e:
             pass
         # Check Microsoft Rewards
+        self.detail.emit("Checking Microsoft Rewards...")
         self.rewards_login()
         # Check Login
+        self.detail.emit("Checking login on bing...")
         self.check_bing_login(isMobile)
 
     def rewards_login(self):
         #Login into Rewards
         self.browser.get('https://rewards.microsoft.com/')
         try:
-            time.sleep(10 if not self.config["globalOptions"] else 5)
+            time.sleep(10 if not self.config["globalOptions"]["fast"] else 5)
             self.browser.find_element(By.ID, 'raf-signin-link-id').click()
         except:
             pass
@@ -305,7 +345,7 @@ class Farmer:
         # Wait 15 seconds
         time.sleep(15 if not self.config["globalOptions"]["fast"] else 5)
         # try to get points at first if account already logged in
-        if self.config.get("session", False):
+        if self.config["globalOptions"]["session"]:
             try:
                 if not isMobile:
                     try:
@@ -518,6 +558,13 @@ class Farmer:
         return str(t)
     
     def bing_searches(self, numberOfSearches: int, isMobile: bool = False):
+        if not isMobile:
+            self.section.emit("PC Bing Searches")
+            # self.ui.section.setText("PC Bing Searches")
+        else:
+            # self.section.emit("Mobile Bing Searches")
+            self.ui.section.setText("Mobile Bing Searches")
+        self.detail.emit(f"0/{numberOfSearches}")
         i = 0
         r = RandomWords()
         search_terms = r.get_random_words(limit = numberOfSearches)
@@ -525,7 +572,10 @@ class Farmer:
             search_terms = self.get_google_trends(numberOfSearches)
         for word in search_terms:
             i += 1
+            self.detail.emit(f"{i}/{numberOfSearches}")
             points = self.bing_search(word, isMobile)
+            self.points.emit(points)
+            self.ui.points_counter.setText(f"{i}/{numberOfSearches}")
             if points <= self.points_counter :
                 relatedTerms = self.get_related_terms(word)
                 for term in relatedTerms :
@@ -582,6 +632,7 @@ class Farmer:
     
     def complete_promotional_items(self):
         try:
+            self.detail.emit("Promotional items")
             item = self.get_dashboard_data()["promotionalItem"]
             if (item["pointProgressMax"] == 100 or item["pointProgressMax"] == 200) and item["complete"] == False and item["destinationUrl"] == "https://rewards.microsoft.com/":
                 self.browser.find_element(By.XPATH, '//*[@id="promo-item"]/section/div/div/div/a').click()
@@ -779,6 +830,7 @@ class Farmer:
         time.sleep(2)
     
     def complete_daily_set(self, ):
+        self.section.emit("Daily Set")
         d = self.get_dashboard_data(self.browser)
         error = False
         todayDate = datetime.today().strftime('%m/%d/%Y')
@@ -791,14 +843,14 @@ class Farmer:
                 if activity['complete'] == False:
                     cardNumber = int(activity['offerId'][-1:])
                     if activity['promotionType'] == "urlreward":
-                        # print('[DAILY SET]', 'Completing search of card ' + str(cardNumber))
+                        self.detail.emit(f'Search of card {str(cardNumber)}')
                         self.complete_daily_set_search(cardNumber)
                     if activity['promotionType'] == "quiz":
                         if activity['pointProgressMax'] == 50 and activity['pointProgress'] == 0:
-                            # print('[DAILY SET]', 'Completing This or That of card ' + str(cardNumber))
+                            self.detail.emit(f'This or That of card {str(cardNumber)}')
                             self.complete_daily_set_this_or_that(cardNumber)
                         elif (activity['pointProgressMax'] == 40 or activity['pointProgressMax'] == 30) and activity['pointProgress'] == 0:
-                            # print('[DAILY SET]', 'Completing quiz of card ' + str(cardNumber))
+                            self.detail.emit(f"Quiz of card {str(cardNumber)}")
                             self.complete_daily_set_quiz(cardNumber)
                         elif activity['pointProgressMax'] == 10 and activity['pointProgress'] == 0:
                             searchUrl = urllib.parse.unquote(urllib.parse.parse_qs(urllib.parse.urlparse(activity['destinationUrl']).query)['ru'][0])
@@ -808,10 +860,10 @@ class Farmer:
                                 filter = filter.split(':', 1)
                                 filters[filter[0]] = filter[1]
                             if "PollScenarioId" in filters:
-                                # print('[DAILY SET]', 'Completing poll of card ' + str(cardNumber))
+                                self.detail.emit(f"Poll of card {str(cardNumber)}")
                                 self.complete_daily_set_survey(cardNumber)
                             else:
-                                # print('[DAILY SET]', 'Completing quiz of card ' + str(cardNumber))
+                                self.detail.emit(f"Quiz of card {str(cardNumber)}")
                                 self.complete_daily_set_variable_activity(cardNumber)
             except:
                 error = True
@@ -877,6 +929,8 @@ class Farmer:
                 
     def complete_punch_cards(self, ):
         punchCards = self.get_dashboard_data()['punchCards']
+        self.section.emit("Punch cards")
+        self.detail.emit("-")
         for punchCard in punchCards:
             try:
                 if punchCard['parentPromotion'] != None and punchCard['childPromotions'] != None and punchCard['parentPromotion']['complete'] == False and punchCard['parentPromotion']['pointProgressMax'] != 0:
@@ -1011,7 +1065,7 @@ class Farmer:
         time.sleep(2)
         
     def complete_more_promotions(self, ):
-        # print('[MORE PROMO]', 'Trying to complete More Promotions...')
+        self.section.emit("More activities")
         morePromotions = self.get_dashboard_data()['morePromotions']
         i = 0
         for promotion in morePromotions:
@@ -1019,20 +1073,26 @@ class Farmer:
                 i += 1
                 if promotion['complete'] == False and promotion['pointProgressMax'] != 0:
                     if promotion['promotionType'] == "urlreward":
+                        self.detail.emit("Search card")
                         self.complete_more_promotion_search(i)
                     elif promotion['promotionType'] == "quiz":
                         if promotion['pointProgressMax'] == 10:
+                            self.detail.emit("ABC card")
                             self.complete_more_promotion_ABC(i)
                         elif promotion['pointProgressMax'] == 30 or promotion['pointProgressMax'] == 40:
+                            self.detail.emit("Quiz card")
                             self.complete_more_promotion_quiz(i)
                         elif promotion['pointProgressMax'] == 50:
+                            self.detail.emit("This or that card")
                             self.complete_more_promotion_this_or_that(i)
                     else:
                         if promotion['pointProgressMax'] == 100 or promotion['pointProgressMax'] == 200:
+                            self.detail.emit("Search card")
                             self.complete_more_promotion_search(i)
                 if promotion['complete'] == False and promotion['pointProgressMax'] == 100 and promotion['promotionType'] == "" \
                     and promotion['destinationUrl'] == "https://rewards.microsoft.com":
-                    self.complete_more_promotion_search(i)
+                        self.detail.emit("Search card")
+                        self.complete_more_promotion_search(i)
             except:
                 self.reset_tabs()
         self.logs[self.current_account]['More promotions'] = True
@@ -1066,3 +1126,88 @@ class Farmer:
             remainingMobile = int((targetMobile - progressMobile) / searchPoints)
         return remainingDesktop, remainingMobile
     
+    def run(self):
+        for account in self.accounts:
+            while True:
+                try:
+                    self.current_account = account["username"]
+                    if account["username"] in self.finished_accounts or account["username"] in self.suspended_accounts:
+                        continue
+                    if self.logs[self.current_account]["Last check"] != str(date.today()):
+                        self.logs[self.current_account]["Last check"] = str(date.today())
+                        self.update_logs()
+                    self.ui.current_account.setText(account["username"])
+                    if any([value for key, value in self.config["farmOptions"].items() if key != "searchMobile"]):
+
+                        self.browser_setup(False, self.PC_USER_AGENT)
+                        self.login(account["username"], account["password"])
+                        self.detail.emit("Logged in")
+                        
+                        self.browser.get("https://rewards.microsoft.com/")
+                        starting_points = self.get_account_points()
+                        self.points_counter = starting_points
+                        self.points.emit(self.points_counter)
+
+                        if self.config["farmOptions"]["dailyQuests"] and not self.logs[self.current_account]["Daily"]:
+                            self.complete_daily_set()
+                            self.points.emit(self.points_counter)
+
+                        if self.config["farmOptions"]["punchCards"] and not self.logs[self.current_account]["Punch cards"]:
+                            self.complete_punch_cards()
+                            self.points.emit(self.points_counter)
+
+                        if self.config["farmOptions"]["moreActivities"] and not self.logs[self.current_account]["More promotions"]:
+                            self.complete_more_promotions()
+                            self.points.emit(self.points_counter)
+
+                        if self.config["farmOptions"]["searchPC"] and not self.logs[self.current_account]["PC searches"]:
+                            remainingSearches = self.get_remaining_searches()[0]
+                            self.bing_searches(remainingSearches)
+
+                    if self.config["farmOptions"]["searchMobile"]:
+                        self.browser_setup(True, self.MOBILE_USER_AGENT)
+                        self.login(account["username"], account["password"])
+                        self.browser.get("https://rewards.microsoft.com/")
+                        remainingSearches = self.get_remaining_searches()[1]
+                        if remainingSearches > 0:
+                            self.bing_searches(remainingSearches, True)
+
+                    earned_points = self.points_counter - starting_points
+                    self.finished_accounts.append(account["username"])
+                    self.logs[account["username"]]["Today's points"] = earned_points
+                    self.logs[account["username"]]["Points"] = self.points_counter
+                    self.clean_logs()
+                    self.update_logs()
+
+                    self.current_account.setText("-")
+                    # self.ui.current_point.setText("-")
+                    self.points.emit(self.points_counter)
+                    self.ui.finished_accounts_count.setText(str(len(self.finished_accounts)))
+                    
+                    if self.ui.send_to_telegram_checkbox.isChecked():
+                        message = self.create_message()
+                        self.send_report_to_telegram(message)
+                    break
+                    
+                except SessionNotCreatedException:
+                    self.browser = None
+                    # self.ui.send_error("Farmer error", "Session not created.", "Session not created. download correct version of webdriver "\
+                    #     "from https://chromedriver.chromium.org/downloads")
+                    # self.ui.stop()
+                    self.finished.emit()
+                    pass
+                    
+                except (Exception, FunctionTimedOut) as e:
+                    # self.ui.send_error("Farmer error", "Unknown error.", str(e))
+                    if isinstance(self.browser, WebDriver):
+                        self.browser.quit()
+                    self.browser = None
+                    if self.ui.thread.isInterruptionRequested():
+                        self.finished.emit()
+                        return None
+                    # self.run()
+        else:
+            # self.ui.enable_elements()
+            if self.config["globalOptions"]["shutdownSystem"]: os.system("shutdown /s")
+            self.finished.emit()
+        
