@@ -19,7 +19,8 @@ class UserInterface(object):
                 "headless": False,
                 "session": False,
                 "fast": False,
-                "displayErrors": False,
+                "saveErrors": False,
+                "shutdownSystem": False
             },
             "farmOptions": {
                 "dailyQuests": False,
@@ -33,6 +34,7 @@ class UserInterface(object):
         self.sample_accounts = [{"username": "Your Email", "password": "Your Password"}]
 
     def setupUi(self, MainWindow):
+        self.MainWindow = MainWindow
         MainWindow.setObjectName("MainWindow")
         MainWindow.setWindowModality(QtCore.Qt.NonModal)
         MainWindow.setEnabled(True)
@@ -149,10 +151,14 @@ class UserInterface(object):
         self.fast_mode_checkbox.setObjectName("fast_mode_checkbox")
         self.verticalLayout.addWidget(self.fast_mode_checkbox)
 
+        self.save_errors = QtWidgets.QCheckBox(self.global_options_groupbox)
+        self.save_errors.setObjectName("save_errors")
+        self.verticalLayout.addWidget(self.save_errors)
+
         self.shutdown_system = QtWidgets.QCheckBox(self.global_options_groupbox)
         self.shutdown_system.setObjectName("shutdown_system")
         self.verticalLayout.addWidget(self.shutdown_system)
-
+        
         self.farm_options_groupbox = QtWidgets.QGroupBox(self.centralwidget)
         self.farm_options_groupbox.setGeometry(QtCore.QRect(190, 210, 121, 141))
         self.farm_options_groupbox.setObjectName("farm_options_groupbox")
@@ -275,7 +281,7 @@ class UserInterface(object):
         self.current_account.setObjectName("current_account")
 
         self.current_point = QtWidgets.QLabel(self.progress_info_groupbox)
-        self.current_point.setGeometry(QtCore.QRect(340, 60, 81, 20))
+        self.current_point.setGeometry(QtCore.QRect(340, 58, 81, 20))
         self.current_point.setObjectName("current_point")
 
         self.section = QtWidgets.QLabel(self.progress_info_groupbox)
@@ -314,7 +320,7 @@ class UserInterface(object):
         self.stop_button.clicked.connect(self.stop)
         self.open_accounts_button.clicked.connect(self.open_accounts)
         QtCore.QMetaObject.connectSlotsByName(MainWindow)
-
+        
     def disable_elements(self):
         self.start_button.setEnabled(False)
         self.global_options_groupbox.setEnabled(False)
@@ -325,7 +331,7 @@ class UserInterface(object):
         self.api_key_lineedit.setEnabled(False)
         self.chat_id_lineedit.setEnabled(False)
         self.timeEdit.setEnabled(False)
-        self.stop_button.setEnabled(True)
+        # self.stop_button.setEnabled(True)
         self.accounts_count.setText(str(len(self.accounts)))
         self.finished_accounts_count.setText("0")
         self.locked_accounts_count.setText("0")
@@ -359,10 +365,13 @@ class UserInterface(object):
     
     def update_points_counter(self, value):
         self.current_point.setText(str(value))
-        
+    
+    def update_stop_button(self, value: bool):
+        self.stop_button.setEnabled(value)
+      
     def update_section(self, value):
         self.section.setText(value)
-        self.detail.adjustSize()
+        self.section.adjustSize()
         
     def update_detail(self, value):
         self.detail.setText(value)
@@ -374,28 +383,28 @@ class UserInterface(object):
             self.send_error(text="You must select at least one option to farm.")
             return None
         self.disable_elements()
-        self.thread = QtCore.QThread()
+        self.farmer_thread = QtCore.QThread()
         self.farmer = Farmer(self)
-        self.farmer.moveToThread(self.thread)
-        self.thread.started.connect(self.farmer.run)
-        self.farmer.finished.connect(self.thread.quit)
+        self.farmer.moveToThread(self.farmer_thread)
+        self.farmer_thread.started.connect(self.farmer.perform_run)
+        self.farmer.finished.connect(self.farmer_thread.quit)
         self.farmer.finished.connect(self.farmer.deleteLater)
+        self.farmer_thread.finished.connect(self.farmer_thread.deleteLater)
+        # update elements with signals
         self.farmer.finished.connect(self.enable_elements)
         self.farmer.finished.connect(lambda: self.stop_button.setEnabled(False))
-        self.thread.finished.connect(self.thread.deleteLater)
-        # update elements with signals
         self.farmer.points.connect(self.update_points_counter)
         self.farmer.section.connect(self.update_section)
         self.farmer.detail.connect(self.update_detail)
+        self.farmer.stop_button_enabled.connect(self.update_stop_button)
         
-        self.thread.start()
+        self.farmer_thread.start()
 
     def stop(self):
-        self.thread.requestInterruption()
         self.stop_button.setEnabled(False)
+        self.farmer_thread.requestInterruption()
         if isinstance(self.farmer.browser, WebDriver) or self.farmer.browser is not None:
             self.farmer.browser.quit()
-        self.thread.exit()
         self.enable_elements()
 
     def open_accounts(self):
@@ -476,6 +485,7 @@ class UserInterface(object):
         self.headless_checkbox.setChecked(self.config["globalOptions"]["headless"])
         self.session_checkbox.setChecked(self.config["globalOptions"]["session"])
         self.fast_mode_checkbox.setChecked(self.config["globalOptions"]["fast"])
+        self.save_errors.setChecked(self.config["globalOptions"]["saveErrors"])
         self.shutdown_system.setChecked(self.config["globalOptions"]["shutdownSystem"])
         self.daily_quests_checkbox.setChecked(self.config["farmOptions"]["dailyQuests"])
         self.punch_cards_checkbox.setChecked(self.config["farmOptions"]["punchCards"])
@@ -494,6 +504,7 @@ class UserInterface(object):
                 "headless": self.headless_checkbox.isChecked(),
                 "session": self.session_checkbox.isChecked(),
                 "fast": self.fast_mode_checkbox.isChecked(),
+                "saveErrors": self.save_errors.isChecked(),
                 "shutdownSystem": self.shutdown_system.isChecked(),
             },
             "farmOptions": {
@@ -522,6 +533,7 @@ class UserInterface(object):
         self.headless_checkbox.setText(_translate("MainWindow", "Headless"))
         self.session_checkbox.setText(_translate("MainWindow", "Session"))
         self.fast_mode_checkbox.setText(_translate("MainWindow", "Fast mode"))
+        self.save_errors.setText(_translate("MainWindow", "Save errors"))
         self.shutdown_system.setText(_translate("MainWindow", "Shutdown PC"))
         self.farm_options_groupbox.setTitle(_translate("MainWindow", "Farm options"))
         self.daily_quests_checkbox.setText(_translate("MainWindow", "Daily quests"))

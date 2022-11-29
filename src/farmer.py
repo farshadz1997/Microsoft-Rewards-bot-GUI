@@ -3,13 +3,13 @@ import os
 import platform
 import random
 import subprocess
-import sys
 import time
 import urllib.parse
 from pathlib import Path
 from datetime import date, datetime, timedelta
 from notifiers import get_notifier
-from PyQt5.QtCore import QObject, pyqtSignal
+from PyQt5.QtCore import QObject, pyqtSignal, QTime
+from .exceptions import *
 
 import ipapi
 import requests
@@ -35,9 +35,10 @@ class Farmer(QObject):
     points = pyqtSignal(int)
     section = pyqtSignal(str)
     detail = pyqtSignal(str)
+    stop_button_enabled = pyqtSignal(bool)
+    
     PC_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36 Edg/107.0.1418.24'
     MOBILE_USER_AGENT = 'Mozilla/5.0 (Linux; Android 12; SM-N9750) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Mobile Safari/537.36 EdgA/107.0.1418.28'
-    logs: dict = {}
     
     def __init__(self, ui):
         super(Farmer, self).__init__()
@@ -52,6 +53,8 @@ class Farmer(QObject):
         self.suspended_accounts: list = [] 
         self.current_account: str = None
         self.browser: WebDriver = None
+        self.pc_section_farmed: bool = False
+        self.logs: dict = {}
         self.get_or_create_logs()
         self.lang, self.geo, self.tz = self.get_ccode_lang_and_offset()
     
@@ -98,13 +101,9 @@ class Farmer(QObject):
                 time.sleep(1)
     
     def get_or_create_logs(self):
-        '''
-        Read logs and check whether account farmed or not
-        '''
-        # access to logs attribute
+        """Read logs and check whether account farmed or not"""
         shared_items =[]
         try:
-            # Read datas on 'logs_accounts.txt'
             self.logs = json.load(open(f"{self.accounts_path.parent}/Logs_{self.accounts_path.stem}.txt", "r"))
             # delete Time period from logs
             self.logs.pop("Elapsed time", None)
@@ -127,15 +126,16 @@ class Farmer(QObject):
                 elif self.logs[account]['Last check'] == 'Your account has been suspended':
                     self.suspended_accounts.append(account)
                 elif self.logs[account]['Last check'] == str(date.today()) and list(self.logs[account].keys()) == ['Last check', "Today's points", 'Points',
-                                                                                                        'Daily', 'Punch cards', 'More promotions', 'PC searches']:
+                                                                                                        'Daily', 'Punch cards', 'More promotions', 'PC searches', 'Mobile searches']:
                     continue
                 else:
                     self.logs[account]['Daily'] = False
                     self.logs[account]['Punch cards'] = False
                     self.logs[account]['More promotions'] = False
                     self.logs[account]['PC searches'] = False 
+                    self.logs[account]['Mobile searches'] = False
             self.update_logs()       
-        except FileNotFoundError:
+        except (FileNotFoundError, json.decoder.JSONDecodeError):
             for account in self.accounts:
                 self.logs[account["username"]] = {"Last check": "",
                                             "Today's points": 0,
@@ -143,18 +143,22 @@ class Farmer(QObject):
                                             "Daily": False,
                                             "Punch cards": False,
                                             "More promotions": False,
-                                            "PC searches": False}
+                                            "PC searches": False,
+                                            "Mobile searches": False}
             self.update_logs()
         
     def update_logs(self):
+        """Update logs with new data"""
         with open(f'{self.accounts_path.parent}/Logs_{self.accounts_path.stem}.txt', 'w') as file:
             file.write(json.dumps(self.logs, indent = 4))
 
     def clean_logs(self):
+        """Delete Daily, Punch cards, More promotions, PC searches from logs"""
         del self.logs[self.current_account]["Daily"]
         del self.logs[self.current_account]["Punch cards"]
         del self.logs[self.current_account]["More promotions"]
         del self.logs[self.current_account]["PC searches"]
+        del self.logs[self.current_account]["Mobile searches"]
         
     def is_element_exists(self, _by: By, element: str) -> bool:
         '''Returns True if given element exists else False'''
@@ -208,8 +212,9 @@ class Farmer(QObject):
     
     def login(self, email: str, pwd: str, isMobile: bool = False):
         """Login into  Microsoft account"""
+        login_message = "Logging in..." if not isMobile else "Logging in mobile..."
+        self.section.emit(login_message)
         # Close welcome tab for new sessions
-        self.section.emit("Logging in...")
         if self.config["globalOptions"]["session"]:
             time.sleep(2)
             if len(self.browser.window_handles) > 1:
@@ -229,15 +234,25 @@ class Farmer(QObject):
                 self.browser.find_element(By.ID, 'iNext').click()
                 time.sleep(5)
             if self.browser.title == 'Microsoft account | Home' or self.is_element_exists(By.ID, 'navs_container'):
+                self.detail.emit("Microsoft Rewards...")
                 self.rewards_login()
+                self.detail.emit("Bing...")
                 self.check_bing_login(isMobile)
                 return
             elif self.browser.title == 'Your account has been temporarily suspended':
-                self.logs[self.current_account]['Last check'] = 'Your account has been locked !'
-                self.finished_accounts.append(self.current_account)
-                self.update_logs()
-                self.clean_logs()
-                raise Exception('Your account has been locked !')
+                raise AccountLockedException('Your account has been locked !')
+            elif self.is_element_exists(By.ID, 'mectrl_headerPicture') or 'Sign In or Create' in self.browser.title:
+                if self.is_element_exists(By.ID, 'i0118'):
+                    self.browser.find_element(By.ID, "i0118").send_keys(pwd)
+                    time.sleep(2)
+                    self.browser.find_element(By.ID, 'idSIButton9').click()
+                    time.sleep(5)
+                    self.section.emit("Logged in")
+                    self.detail.emit("Microsoft Rewards...")
+                    self.rewards_login()
+                    self.detail.emit("Bing...")
+                    self.check_bing_login(isMobile)
+                    return None
         # Wait complete loading
         self.wait_until_visible(By.ID, 'loginHeader', 10)
         # Enter email
@@ -268,23 +283,11 @@ class Farmer(QObject):
         except NoSuchElementException:
             # Check for if account has been locked.
             if self.browser.title == "Your account has been temporarily suspended" or self.is_element_exists(By.CLASS_NAME, "serviceAbusePageContainer  PageContainer"):
-                self.logs[self.current_account]['Last check'] = 'Your account has been locked !'
-                self.finished_accounts.append(self.current_account)
-                self.update_logs()
-                self.clean_logs()
-                raise Exception('[ERROR] Your account has been locked !')
+                raise AccountLockedException("Your account has been locked !")
             elif self.browser.title == "Help us protect your account":
-                self.logs[self.current_account]['Last check'] = 'Unusual activity detected !'
-                self.finished_accounts.append(self.current_account)       
-                self.update_logs()
-                self.clean_logs()
-                os._exit(0)
+                raise UnusualActivityException("Unusual activity detected")
             else:
-                self.logs[self.current_account]['Last check'] = 'Unknown error !'
-                self.finished_accounts.append(self.current_account)
-                self.update_logs()
-                self.clean_logs()
-                raise Exception('Unknown error !')
+                raise UnhandledException('Unknown error !')
         # Wait 5 seconds
         time.sleep(5)
         # Click Security Check
@@ -305,14 +308,14 @@ class Farmer(QObject):
         except (NoSuchElementException, ElementNotInteractableException) as e:
             pass
         # Check Microsoft Rewards
-        self.detail.emit("Checking Microsoft Rewards...")
+        self.detail.emit("Microsoft Rewards...")
         self.rewards_login()
         # Check Login
-        self.detail.emit("Checking login on bing...")
+        self.detail.emit("Bing...")
         self.check_bing_login(isMobile)
 
     def rewards_login(self):
-        #Login into Rewards
+        """Login into Microsoft rewards and check account"""
         self.browser.get('https://rewards.microsoft.com/')
         try:
             time.sleep(10 if not self.config["globalOptions"]["fast"] else 5)
@@ -320,29 +323,19 @@ class Farmer(QObject):
         except:
             pass
         time.sleep(10 if not self.config["globalOptions"]["fast"] else 5)
-        # Check for ErrorMessage
+        # Check for ErrorMessage in Microsoft rewards page
         try:
             self.browser.find_element(By.ID, 'error').is_displayed()
-            # Check wheter account suspended or not
             if self.browser.find_element(By.XPATH, '//*[@id="error"]/h1').get_attribute('innerHTML') == ' Uh oh, it appears your Microsoft Rewards account has been suspended.':
-                self.logs[self.current_account]['Last check'] = 'Your account has been suspended'
-                self.logs[self.current_account]["Today's points"] = 'N/A' 
-                self.logs[self.current_account]["Points"] = 'N/A' 
-                self.clean_logs()
-                self.update_logs()
-                self.finished_accounts.append(self.current_account)
-                raise Exception('Your Microsoft Rewards account has been suspended !')
-            # Check whether Rewards is available in your region or not
+                raise AccountSuspendedException('Your account has been suspended !')
             elif self.browser.find_element(By.XPATH, '//*[@id="error"]/h1').get_attribute('innerHTML') == 'Microsoft Rewards is not available in this country or region.':
-                os._exit()
+                raise RegionException('Microsoft Rewards is not available in your region !')
         except NoSuchElementException:
             pass
 
     @func_set_timeout(300)
     def check_bing_login(self, isMobile: bool = False):
-        #Access Bing.com
         self.browser.get('https://bing.com/')
-        # Wait 15 seconds
         time.sleep(15 if not self.config["globalOptions"]["fast"] else 5)
         # try to get points at first if account already logged in
         if self.config["globalOptions"]["session"]:
@@ -411,11 +404,9 @@ class Farmer(QObject):
                     self.logs[self.current_account]['Last check'] = 'Requires manual check!'
                     self.update_logs()
                     exit()
-        #Wait 5 seconds
         time.sleep(5)
         # Refresh page
         self.browser.get('https://bing.com/')
-        # Wait 15 seconds
         time.sleep(15 if not self.config["globalOptions"]["fast"] else 5)
         #Update Counter
         try:
@@ -560,10 +551,8 @@ class Farmer(QObject):
     def bing_searches(self, numberOfSearches: int, isMobile: bool = False):
         if not isMobile:
             self.section.emit("PC Bing Searches")
-            # self.ui.section.setText("PC Bing Searches")
         else:
-            # self.section.emit("Mobile Bing Searches")
-            self.ui.section.setText("Mobile Bing Searches")
+            self.section.emit("Mobile Bing Searches")
         self.detail.emit(f"0/{numberOfSearches}")
         i = 0
         r = RandomWords()
@@ -575,11 +564,11 @@ class Farmer(QObject):
             self.detail.emit(f"{i}/{numberOfSearches}")
             points = self.bing_search(word, isMobile)
             self.points.emit(points)
-            self.ui.points_counter.setText(f"{i}/{numberOfSearches}")
             if points <= self.points_counter :
                 relatedTerms = self.get_related_terms(word)
                 for term in relatedTerms :
                     points = self.bing_search(term, isMobile)
+                    self.points.emit(points)
                     if points >= self.points_counter:
                         break
             if points > 0:
@@ -639,6 +628,7 @@ class Farmer(QObject):
                 time.sleep(1)
                 self.browser.switch_to.window(window_name = self.browser.window_handles[1])
                 time.sleep(8)
+                self.points.emit(self.get_points_from_bing())
                 self.browser.close()
                 time.sleep(2)
                 self.browser.switch_to.window(window_name = self.browser.window_handles[0])
@@ -652,6 +642,7 @@ class Farmer(QObject):
         time.sleep(1)
         self.browser.switch_to.window(window_name = self.browser.window_handles[1])
         time.sleep(random.randint(13, 17) if not self.config["globalOptions"]["fast"] else random.randint(6, 9))
+        self.points.emit(self.get_points_from_bing())
         self.browser.close()
         time.sleep(2)
         self.browser.switch_to.window(window_name = self.browser.window_handles[0])
@@ -673,6 +664,7 @@ class Farmer(QObject):
             time.sleep(2)
         self.browser.find_element(By.ID, "btoption" + str(random.randint(0, 1))).click()
         time.sleep(random.randint(10, 15) if not self.config["globalOptions"]["fast"] else 7)
+        self.points.emit(self.get_points_from_bing())
         self.browser.close()
         time.sleep(2)
         self.browser.switch_to.window(window_name = self.browser.window_handles[0])
@@ -726,6 +718,7 @@ class Farmer(QObject):
                             return
                         break
                 time.sleep(5)
+            self.points.emit(self.get_points_from_bing())
         time.sleep(5)
         self.browser.close()
         time.sleep(2)
@@ -757,6 +750,7 @@ class Farmer(QObject):
                         
                     self.browser.execute_script(f'document.evaluate("//*[@id=\'QuestionPane{str(question)}\']/div[1]/div[2]/a[{str(random.randint(1, 3))}]/div", document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue.click()')
                     time.sleep(8)
+                    self.points.emit(self.get_points_from_bing())
                 time.sleep(5)
                 self.browser.close()
                 time.sleep(2)
@@ -777,6 +771,7 @@ class Farmer(QObject):
         else :
             self.browser.find_element(By.ID, "rqAnswerOption1").click()
         time.sleep(10)
+        self.points.emit(self.get_points_from_bing())
         self.browser.close()
         time.sleep(2)
         self.browser.switch_to.window(window_name = self.browser.window_handles[0])
@@ -822,6 +817,7 @@ class Farmer(QObject):
             elif (answer2Code == correctAnswerCode):
                 answer2.click()
                 time.sleep(15 if not self.config["globalOptions"]["fast"] else 7)
+            self.points.emit(self.get_points_from_bing())
 
         time.sleep(5)
         self.browser.close()
@@ -831,8 +827,7 @@ class Farmer(QObject):
     
     def complete_daily_set(self, ):
         self.section.emit("Daily Set")
-        d = self.get_dashboard_data(self.browser)
-        error = False
+        d = self.get_dashboard_data()
         todayDate = datetime.today().strftime('%m/%d/%Y')
         todayPack = []
         for date, data in d['dailySetPromotions'].items():
@@ -866,7 +861,6 @@ class Farmer(QObject):
                                 self.detail.emit(f"Quiz of card {str(cardNumber)}")
                                 self.complete_daily_set_variable_activity(cardNumber)
             except:
-                error = True
                 self.reset_tabs()
         self.logs[self.current_account]['Daily'] = True
         self.update_logs() 
@@ -959,6 +953,7 @@ class Farmer(QObject):
         time.sleep(1)
         self.browser.switch_to.window(window_name = self.browser.window_handles[1])
         time.sleep(random.randint(13, 17) if not self.config["globalOptions"]["fast"] else random.randint(5, 8))
+        self.points.emit(self.get_points_from_bing())
         self.browser.close()
         time.sleep(2)
         self.browser.switch_to.window(window_name = self.browser.window_handles[0])
@@ -1002,6 +997,7 @@ class Farmer(QObject):
                             return
                         break
                 time.sleep(5)
+            self.points.emit(self.get_points_from_bing())
         time.sleep(5)
         self.browser.close()
         time.sleep(2)
@@ -1019,6 +1015,7 @@ class Farmer(QObject):
             self.browser.execute_script(f'document.evaluate("//*[@id=\'QuestionPane{str(question)}\']/div[1]/div[2]/a[{str(random.randint(1, 3))}]/div", document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue.click()')
             time.sleep(8 if not self.config["globalOptions"]["fast"] else 5)
         time.sleep(5)
+        self.points.emit(self.get_points_from_bing())
         self.browser.close()
         time.sleep(2)
         self.browser.switch_to.window(window_name=self.browser.window_handles[0])
@@ -1057,6 +1054,7 @@ class Farmer(QObject):
             elif (answer2Code == correctAnswerCode):
                 answer2.click()
                 time.sleep(8 if not self.config["globalOptions"]["fast"] else 5)
+            self.points.emit(self.get_points_from_bing())
 
         time.sleep(5)
         self.browser.close()
@@ -1064,7 +1062,7 @@ class Farmer(QObject):
         self.browser.switch_to.window(window_name=self.browser.window_handles[0])
         time.sleep(2)
         
-    def complete_more_promotions(self, ):
+    def complete_more_promotions(self):
         self.section.emit("More activities")
         morePromotions = self.get_dashboard_data()['morePromotions']
         i = 0
@@ -1126,13 +1124,36 @@ class Farmer(QObject):
             remainingMobile = int((targetMobile - progressMobile) / searchPoints)
         return remainingDesktop, remainingMobile
     
+    def get_points_from_bing(self):
+        try:
+            points = int(self.browser.find_element(By.ID, 'id_rc').get_attribute('innerHTML'))
+        except ValueError:
+            points = int(self.browser.find_element(By.ID, 'id_rc').get_attribute('innerHTML').replace(",", ""))
+        finally:
+            return points
+    
+    def perform_run(self):
+        """Check whether timer is set to run it at time or run immediately"""
+        if self.ui.active_timer_checkbox.isChecked():
+            self.stop_button_enabled.emit(True)
+            requested_time = self.ui.timeEdit.time().toString("HH:mm")
+            self.section.emit(f"Starts at {requested_time}")
+            while QTime.currentTime().toString("HH:mm") != requested_time:
+                if self.ui.farmer_thread.isInterruptionRequested():
+                    self.finished.emit()
+                    return None
+                time.sleep(1)
+            else:
+                return self.run()
+        return self.run()
+    
     def run(self):
         for account in self.accounts:
             while True:
                 try:
                     self.current_account = account["username"]
                     if account["username"] in self.finished_accounts or account["username"] in self.suspended_accounts:
-                        continue
+                        break
                     if self.logs[self.current_account]["Last check"] != str(date.today()):
                         self.logs[self.current_account]["Last check"] = str(date.today())
                         self.update_logs()
@@ -1140,6 +1161,7 @@ class Farmer(QObject):
                     if any([value for key, value in self.config["farmOptions"].items() if key != "searchMobile"]):
 
                         self.browser_setup(False, self.PC_USER_AGENT)
+                        self.stop_button_enabled.emit(True)
                         self.login(account["username"], account["password"])
                         self.detail.emit("Logged in")
                         
@@ -1163,51 +1185,107 @@ class Farmer(QObject):
                         if self.config["farmOptions"]["searchPC"] and not self.logs[self.current_account]["PC searches"]:
                             remainingSearches = self.get_remaining_searches()[0]
                             self.bing_searches(remainingSearches)
+                            
+                        self.browser.quit()
+                        self.stop_button_enabled.emit(False)
+                        self.detail.emit("-")
+                        self.section.emit("-")
+                        
 
-                    if self.config["farmOptions"]["searchMobile"]:
+                    if self.config["farmOptions"]["searchMobile"] and not self.logs[self.current_account]["Mobile searches"]:
                         self.browser_setup(True, self.MOBILE_USER_AGENT)
-                        self.login(account["username"], account["password"])
+                        self.stop_button_enabled.emit(True)
+                        self.login(account["username"], account["password"], True)
                         self.browser.get("https://rewards.microsoft.com/")
                         remainingSearches = self.get_remaining_searches()[1]
                         if remainingSearches > 0:
                             self.bing_searches(remainingSearches, True)
+                        self.browser.quit()
+                        self.stop_button_enabled.emit(False)
+                        self.detail.emit("-")
+                        self.section.emit("-")
 
-                    earned_points = self.points_counter - starting_points
                     self.finished_accounts.append(account["username"])
-                    self.logs[account["username"]]["Today's points"] = earned_points
+                    self.logs[account["username"]]["Today's points"] = self.points_counter - starting_points
                     self.logs[account["username"]]["Points"] = self.points_counter
                     self.clean_logs()
                     self.update_logs()
 
                     self.current_account.setText("-")
-                    # self.ui.current_point.setText("-")
                     self.points.emit(self.points_counter)
                     self.ui.finished_accounts_count.setText(str(len(self.finished_accounts)))
                     
-                    if self.ui.send_to_telegram_checkbox.isChecked():
-                        message = self.create_message()
-                        self.send_report_to_telegram(message)
                     break
                     
                 except SessionNotCreatedException:
                     self.browser = None
-                    # self.ui.send_error("Farmer error", "Session not created.", "Session not created. download correct version of webdriver "\
-                    #     "from https://chromedriver.chromium.org/downloads")
-                    # self.ui.stop()
+                    self.section.emit("Update your web driver")
+                    self.detail.emit("web driver error")
                     self.finished.emit()
-                    pass
+                    return None
+                
+                except AccountLockedException:
+                    self.browser.quit()
+                    self.browser = None
+                    self.logs[self.current_account]['Last check'] = 'Your account has been locked !'
+                    self.finished_accounts.append(self.current_account)
+                    self.update_logs()
+                    self.clean_logs()
+                    break
+                
+                except AccountSuspendedException:
+                    self.browser.quit()
+                    self.browser = None
+                    self.logs[self.current_account]['Last check'] = 'Your account has been suspended'
+                    self.logs[self.current_account]["Today's points"] = 'N/A' 
+                    self.logs[self.current_account]["Points"] = 'N/A' 
+                    self.clean_logs()
+                    self.update_logs()
+                    self.finished_accounts.append(self.current_account)
+                    break
+                
+                except UnusualActivityException:
+                    self.browser.quit()
+                    self.browser = None
+                    self.logs[self.current_account]['Last check'] = 'Unusual activity detected !'
+                    self.finished_accounts.append(self.current_account)       
+                    self.update_logs()
+                    self.clean_logs()
+                    self.finished.emit()
+                    return None
+                    
+                except RegionException:
+                    self.browser.quit()
+                    self.browser = None
+                    self.section.emit("Not available in you region")
+                    self.detail.emit("-")
+                    self.finished.emit()
+                    return None
+                
+                except UnhandledException:
+                    self.browser.quit()
+                    self.browser = None
+                    self.logs[self.current_account]['Last check'] = 'Unknown error !'
+                    self.finished_accounts.append(self.current_account)
+                    self.update_logs()
+                    self.clean_logs()
+                    break
                     
                 except (Exception, FunctionTimedOut) as e:
-                    # self.ui.send_error("Farmer error", "Unknown error.", str(e))
+                    if self.config["globalOptions"]["saveErrors"]:
+                        with open(f"{Path.cwd()}/errors.txt", "a") as f:
+                            f.write(f"\n-------------------{datetime.now()}-------------------\r\n")
+                            f.write(str(e))
                     if isinstance(self.browser, WebDriver):
                         self.browser.quit()
                     self.browser = None
-                    if self.ui.thread.isInterruptionRequested():
+                    if self.ui.farmer_thread.isInterruptionRequested():
                         self.finished.emit()
                         return None
-                    # self.run()
         else:
-            # self.ui.enable_elements()
+            if self.ui.send_to_telegram_checkbox.isChecked():
+                message = self.create_message()
+                self.send_report_to_telegram(message)
             if self.config["globalOptions"]["shutdownSystem"]: os.system("shutdown /s")
             self.finished.emit()
         
