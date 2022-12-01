@@ -36,6 +36,7 @@ class Farmer(QObject):
     section = pyqtSignal(str)
     detail = pyqtSignal(str)
     stop_button_enabled = pyqtSignal(bool)
+    accounts_info_sig = pyqtSignal()
     
     PC_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36 Edg/107.0.1418.24'
     MOBILE_USER_AGENT = 'Mozilla/5.0 (Linux; Android 12; SM-N9750) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Mobile Safari/537.36 EdgA/107.0.1418.28'
@@ -43,17 +44,18 @@ class Farmer(QObject):
     def __init__(self, ui):
         super(Farmer, self).__init__()
         self.ui = ui
-        self.accounts = ui.accounts
+        self.accounts = self.ui.accounts
         self.config: dict = self.ui.config
         self.accounts_path = Path(self.ui.accounts_lineedit.text())
         self.browser: WebDriver = None
         self.points_counter: int = 0
-        self.finished_accounts: list = [] 
-        self.locked_accounts: list = [] 
-        self.suspended_accounts: list = [] 
+        self.finished_accounts: list = []
+        self.locked_accounts: list = []
+        self.suspended_accounts: list = []
         self.current_account: str = None
         self.browser: WebDriver = None
-        self.pc_section_farmed: bool = False
+        self.starting_points: int = None
+        self.point_counter: int = 0
         self.logs: dict = {}
         self.get_or_create_logs()
         self.lang, self.geo, self.tz = self.get_ccode_lang_and_offset()
@@ -90,14 +92,20 @@ class Farmer(QObject):
     
     def check_internet_connection(self):
         system = platform.system()
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         while True:
             try:
                 if system == "Windows":
-                    subprocess.check_output(["ping", "-n", "1", "8.8.8.8"], timeout=5)
+                    subprocess.check_output(["ping", "-n", "1", "8.8.8.8"], timeout=5, startupinfo=si)
                 elif system == "Linux":
-                    subprocess.check_output(["ping", "-c", "1", "8.8.8.8"], timeout=5)
-                return
+                    subprocess.check_output(["ping", "-c", "1", "8.8.8.8"], timeout=5, startupinfo=si)
+                self.section.emit("-")
+                self.detail.emit("-")
+                return None
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                self.section.emit("No internet connection...")
+                self.detail.emit("Checking...")
                 time.sleep(1)
     
     def get_or_create_logs(self):
@@ -121,20 +129,33 @@ class Farmer(QObject):
             
             # check that if any of accounts has farmed today or not.
             for account in self.logs.keys():
-                if self.logs[account]["Last check"] == str(date.today()) and list(self.logs[account].keys()) == ['Last check', "Today's points", 'Points']:
+                if self.logs[account]["Last check"] == str(date.today()) and list(self.logs[account].keys()) == ['Last check',
+                                                                                                                "Today's points",
+                                                                                                                'Points']:
                     self.finished_accounts.append(account)
                 elif self.logs[account]['Last check'] == 'Your account has been suspended':
                     self.suspended_accounts.append(account)
-                elif self.logs[account]['Last check'] == str(date.today()) and list(self.logs[account].keys()) == ['Last check', "Today's points", 'Points',
-                                                                                                        'Daily', 'Punch cards', 'More promotions', 'PC searches', 'Mobile searches']:
-                    continue
+                elif self.logs[account]['Last check'] == str(date.today()) and list(self.logs[account].keys()) == ['Last check', 
+                                                                                                                   "Today's points", 
+                                                                                                                   'Points',
+                                                                                                                   'Daily',
+                                                                                                                   'Punch cards',
+                                                                                                                   'More promotions',
+                                                                                                                   'PC searches',
+                                                                                                                   'Mobile searches']:
+                    if not self.does_account_need_farm(account):
+                        self.current_account = account
+                        self.clean_logs()
+                        self.finished_accounts.append(account)
+                        self.current_account = None
+                    else:
+                        continue
                 else:
                     self.logs[account]['Daily'] = False
                     self.logs[account]['Punch cards'] = False
                     self.logs[account]['More promotions'] = False
                     self.logs[account]['PC searches'] = False 
                     self.logs[account]['Mobile searches'] = False
-            self.update_logs()       
         except (FileNotFoundError, json.decoder.JSONDecodeError):
             for account in self.accounts:
                 self.logs[account["username"]] = {"Last check": "",
@@ -145,7 +166,9 @@ class Farmer(QObject):
                                             "More promotions": False,
                                             "PC searches": False,
                                             "Mobile searches": False}
+        finally:
             self.update_logs()
+            self.accounts_info_sig.emit()
         
     def update_logs(self):
         """Update logs with new data"""
@@ -153,13 +176,44 @@ class Farmer(QObject):
             file.write(json.dumps(self.logs, indent = 4))
 
     def clean_logs(self):
-        """Delete Daily, Punch cards, More promotions, PC searches from logs"""
-        del self.logs[self.current_account]["Daily"]
-        del self.logs[self.current_account]["Punch cards"]
-        del self.logs[self.current_account]["More promotions"]
-        del self.logs[self.current_account]["PC searches"]
-        del self.logs[self.current_account]["Mobile searches"]
-        
+        """Delete Daily, Punch cards, More promotions, PC searches and Mobile searches from logs"""
+        self.logs[self.current_account].pop("Daily", None)
+        self.logs[self.current_account].pop("Punch cards", None)
+        self.logs[self.current_account].pop("More promotions", None)
+        self.logs[self.current_account].pop("PC searches", None)
+        self.logs[self.current_account].pop("Mobile searches", None)
+    
+    def is_pc_need(self) -> bool:
+        """Check if browser for PC is needed or not based on farm options and account status"""
+        if self.config["farmOptions"]["dailyQuests"] and self.logs[self.current_account]["Daily"] == False:
+            return True
+        elif self.config["farmOptions"]["punchCards"] and self.logs[self.current_account]["Punch cards"] == False:
+            return True
+        elif self.config["farmOptions"]["moreActivities"] and self.logs[self.current_account]["More promotions"] == False:
+            return True
+        elif self.config["farmOptions"]["searchPC"] and self.logs[self.current_account]["PC searches"] == False:
+            return True
+        else:
+            return False
+    
+    def does_account_need_farm(self, account: str):
+        """Check that does the account need to be farmed based on logs and options"""
+        conditions = []
+        if self.config["farmOptions"]["dailyQuests"] and not self.logs[account]["Daily"]:
+            conditions.append(True)
+        if self.config["farmOptions"]["punchCards"] and not self.logs[account]["Punch cards"]:
+            conditions.append(True)
+        if self.config["farmOptions"]["moreActivities"] and not self.logs[account]["More promotions"]:
+            conditions.append(True)
+        if self.config["farmOptions"]["searchPC"] and not self.logs[account]["PC searches"]:
+            conditions.append(True)
+        if self.config["farmOptions"]["searchMobile"] and not self.logs[account]["Mobile searches"]:
+            conditions.append(True)
+        if any(conditions):
+            return True
+        else:
+            return False
+    
     def is_element_exists(self, _by: By, element: str) -> bool:
         '''Returns True if given element exists else False'''
         try:
@@ -1133,7 +1187,7 @@ class Farmer(QObject):
             return points
     
     def perform_run(self):
-        """Check whether timer is set to run it at time or run immediately"""
+        """Check whether timer is set to run it at time else run immediately"""
         if self.ui.active_timer_checkbox.isChecked():
             self.stop_button_enabled.emit(True)
             requested_time = self.ui.timeEdit.time().toString("HH:mm")
@@ -1148,6 +1202,7 @@ class Farmer(QObject):
         return self.run()
     
     def run(self):
+        start = time.time()
         for account in self.accounts:
             while True:
                 try:
@@ -1157,8 +1212,8 @@ class Farmer(QObject):
                     if self.logs[self.current_account]["Last check"] != str(date.today()):
                         self.logs[self.current_account]["Last check"] = str(date.today())
                         self.update_logs()
-                    self.ui.current_account.setText(account["username"])
-                    if any([value for key, value in self.config["farmOptions"].items() if key != "searchMobile"]):
+                    self.accounts_info_sig.emit()
+                    if self.is_pc_need():
 
                         self.browser_setup(False, self.PC_USER_AGENT)
                         self.stop_button_enabled.emit(True)
@@ -1166,8 +1221,8 @@ class Farmer(QObject):
                         self.detail.emit("Logged in")
                         
                         self.browser.get("https://rewards.microsoft.com/")
-                        starting_points = self.get_account_points()
-                        self.points_counter = starting_points
+                        self.starting_points = self.get_account_points()
+                        self.points_counter = self.starting_points
                         self.points.emit(self.points_counter)
 
                         if self.config["farmOptions"]["dailyQuests"] and not self.logs[self.current_account]["Daily"]:
@@ -1185,9 +1240,11 @@ class Farmer(QObject):
                         if self.config["farmOptions"]["searchPC"] and not self.logs[self.current_account]["PC searches"]:
                             remainingSearches = self.get_remaining_searches()[0]
                             self.bing_searches(remainingSearches)
+                            self.logs[self.current_account]["PC searches"] = True
+                            self.update_logs()
                             
-                        self.browser.quit()
                         self.stop_button_enabled.emit(False)
+                        self.browser.quit()
                         self.detail.emit("-")
                         self.section.emit("-")
                         
@@ -1197,23 +1254,26 @@ class Farmer(QObject):
                         self.stop_button_enabled.emit(True)
                         self.login(account["username"], account["password"], True)
                         self.browser.get("https://rewards.microsoft.com/")
+                        if not self.starting_points:
+                            self.starting_points = self.get_account_points()
                         remainingSearches = self.get_remaining_searches()[1]
                         if remainingSearches > 0:
                             self.bing_searches(remainingSearches, True)
-                        self.browser.quit()
+                        self.logs[self.current_account]["Mobile searches"] = True
+                        self.update_logs()
                         self.stop_button_enabled.emit(False)
+                        self.browser.quit()
                         self.detail.emit("-")
                         self.section.emit("-")
 
                     self.finished_accounts.append(account["username"])
-                    self.logs[account["username"]]["Today's points"] = self.points_counter - starting_points
+                    self.logs[account["username"]]["Today's points"] = self.points_counter - self.starting_points
                     self.logs[account["username"]]["Points"] = self.points_counter
                     self.clean_logs()
                     self.update_logs()
 
-                    self.current_account.setText("-")
                     self.points.emit(self.points_counter)
-                    self.ui.finished_accounts_count.setText(str(len(self.finished_accounts)))
+                    self.accounts_info_sig.emit()
                     
                     break
                     
@@ -1228,6 +1288,7 @@ class Farmer(QObject):
                     self.browser.quit()
                     self.browser = None
                     self.logs[self.current_account]['Last check'] = 'Your account has been locked !'
+                    self.locked_accounts.append(self.current_account)
                     self.finished_accounts.append(self.current_account)
                     self.update_logs()
                     self.clean_logs()
@@ -1236,12 +1297,14 @@ class Farmer(QObject):
                 except AccountSuspendedException:
                     self.browser.quit()
                     self.browser = None
+                    self.suspended_accounts.append(self.current_account)
                     self.logs[self.current_account]['Last check'] = 'Your account has been suspended'
                     self.logs[self.current_account]["Today's points"] = 'N/A' 
                     self.logs[self.current_account]["Points"] = 'N/A' 
                     self.clean_logs()
                     self.update_logs()
                     self.finished_accounts.append(self.current_account)
+                    self.accounts_info_sig.emit()
                     break
                 
                 except UnusualActivityException:
@@ -1257,9 +1320,8 @@ class Farmer(QObject):
                 except RegionException:
                     self.browser.quit()
                     self.browser = None
-                    self.section.emit("Not available in you region")
-                    self.detail.emit("-")
                     self.finished.emit()
+                    self.section.emit("Not available in you region")
                     return None
                 
                 except UnhandledException:
@@ -1272,20 +1334,28 @@ class Farmer(QObject):
                     break
                     
                 except (Exception, FunctionTimedOut) as e:
-                    if self.config["globalOptions"]["saveErrors"]:
-                        with open(f"{Path.cwd()}/errors.txt", "a") as f:
-                            f.write(f"\n-------------------{datetime.now()}-------------------\r\n")
-                            f.write(str(e))
                     if isinstance(self.browser, WebDriver):
                         self.browser.quit()
+                    self.starting_points = None
                     self.browser = None
                     if self.ui.farmer_thread.isInterruptionRequested():
                         self.finished.emit()
                         return None
+                    if self.config["globalOptions"]["saveErrors"]:
+                        with open(f"{Path.cwd()}/errors.txt", "a") as f:
+                            f.write(f"\n-------------------{datetime.now()}-------------------\r\n")
+                            f.write(f"{str(e)}\n")
+                    self.check_internet_connection()
         else:
             if self.ui.send_to_telegram_checkbox.isChecked():
                 message = self.create_message()
                 self.send_report_to_telegram(message)
+            end = time.time()
+            delta = end - start
+            hour, remain = divmod(delta, 3600)
+            min, sec = divmod(remain, 60)
+            self.logs["Elapsed time"] = f"{hour:02.0f}:{min:02.0f}:{sec:02.0f}"
+            self.update_logs()
             if self.config["globalOptions"]["shutdownSystem"]: os.system("shutdown /s")
             self.finished.emit()
         
