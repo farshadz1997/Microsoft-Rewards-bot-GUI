@@ -82,8 +82,10 @@ class Farmer(QObject):
                 status = '⛔️ Unknow error occured'
                 message += f"{index}. {value[0]}\n📝 Status: {status}\n\n"
             else:
-                status = '⛔️ Unknow error occured'
-                message += f"{index}. {value[0]}\n📝 Status: {status}\n\n"   
+                status = f'Farmed on {value[1]["Last check"]}'
+                new_points = value[1]["Today's points"]
+                total_points = value[1]["Points"]
+                message += f"{index}. {value[0]}\n📝 Status: {status}\n⭐️ Earned points: {new_points}\n🏅 Total points: {total_points}\n\n"  
         return message
 
     def send_report_to_telegram(self, message):
