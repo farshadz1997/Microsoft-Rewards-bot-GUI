@@ -1,13 +1,9 @@
 from PyQt5 import QtCore, QtGui, QtWidgets
 import json
 from pathlib import Path
-from datetime import date
-from func_timeout import FunctionTimedOut
-import os
 
 from .farmer import Farmer
 from selenium.webdriver.chrome.webdriver import WebDriver
-from selenium.common.exceptions import SessionNotCreatedException
 
 
 class UserInterface(object):
@@ -331,7 +327,6 @@ class UserInterface(object):
         self.api_key_lineedit.setEnabled(False)
         self.chat_id_lineedit.setEnabled(False)
         self.timeEdit.setEnabled(False)
-        # self.stop_button.setEnabled(True)
         self.accounts_count.setText(str(len(self.accounts)))
         self.finished_accounts_count.setText("0")
         self.locked_accounts_count.setText("0")
@@ -376,14 +371,20 @@ class UserInterface(object):
     def update_detail(self, value):
         self.detail.setText(value)
         self.detail.adjustSize()
-       
+    
+    def update_accounts_info(self):
+        self.current_account.setText(self.farmer.current_account)
+        self.finished_accounts_count.setText(str(len(self.farmer.finished_accounts)))
+        self.locked_accounts_count.setText(str(len(self.farmer.locked_accounts)))
+        self.suspended_accounts_count.setText(str(len(self.farmer.suspended_accounts)))
+    
     def start(self):
         self.save_config()
         if not any(self.config["farmOptions"].values()):
             self.send_error(text="You must select at least one option to farm.")
             return None
         self.disable_elements()
-        self.farmer_thread = QtCore.QThread()
+        self.farmer_thread = QtCore.QThread(self.MainWindow.thread())
         self.farmer = Farmer(self)
         self.farmer.moveToThread(self.farmer_thread)
         self.farmer_thread.started.connect(self.farmer.perform_run)
@@ -396,16 +397,16 @@ class UserInterface(object):
         self.farmer.points.connect(self.update_points_counter)
         self.farmer.section.connect(self.update_section)
         self.farmer.detail.connect(self.update_detail)
+        self.farmer.accounts_info_sig.connect(self.update_accounts_info)
         self.farmer.stop_button_enabled.connect(self.update_stop_button)
         
         self.farmer_thread.start()
 
     def stop(self):
         self.stop_button.setEnabled(False)
-        self.farmer_thread.requestInterruption()
         if isinstance(self.farmer.browser, WebDriver) or self.farmer.browser is not None:
             self.farmer.browser.quit()
-        self.enable_elements()
+        self.farmer_thread.requestInterruption()
 
     def open_accounts(self):
         fileName, _ = QtWidgets.QFileDialog.getOpenFileName(None, "Open File", "", "JSON Files (*.json)")

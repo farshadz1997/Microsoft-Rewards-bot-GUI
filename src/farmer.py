@@ -5,6 +5,7 @@ import random
 import subprocess
 import time
 import urllib.parse
+from urllib3.exceptions import MaxRetryError, NewConnectionError
 from pathlib import Path
 from datetime import date, datetime, timedelta
 from notifiers import get_notifier
@@ -22,7 +23,8 @@ from selenium.common.exceptions import (ElementNotInteractableException,
                                         NoSuchElementException,
                                         SessionNotCreatedException,
                                         TimeoutException,
-                                        UnexpectedAlertPresentException)
+                                        UnexpectedAlertPresentException,
+                                        InvalidSessionIdException,)
 from selenium.webdriver.chrome.webdriver import WebDriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as ec
@@ -654,23 +656,7 @@ class Farmer(QObject):
         time.sleep(random.randint(12, 24) if not self.config["globalOptions"]["fast"] else random.randint(6, 9))
         points = 0
         try:
-            if not isMobile:
-                try:
-                    points = int(self.browser.find_element(By.ID, 'id_rc').get_attribute('innerHTML'))
-                except ValueError:
-                    points = int(self.browser.find_element(By.ID, 'id_rc').get_attribute('innerHTML').replace(",", ""))
-            else:
-                try :
-                    self.browser.find_element(By.ID, 'mHamburger').click()
-                except UnexpectedAlertPresentException:
-                    try :
-                        self.browser.switch_to.alert.accept()
-                        time.sleep(1)
-                        self.browser.find_element(By.ID, 'mHamburger').click()
-                    except NoAlertPresentException :
-                        pass
-                time.sleep(1)
-                points = int(self.browser.find_element(By.ID, 'fly_id_rc').get_attribute('innerHTML'))
+            points = self.get_points_from_bing(isMobile)
         except:
             pass
         return points
@@ -684,7 +670,7 @@ class Farmer(QObject):
                 time.sleep(1)
                 self.browser.switch_to.window(window_name = self.browser.window_handles[1])
                 time.sleep(8)
-                self.points.emit(self.get_points_from_bing())
+                self.points.emit(self.get_points_from_bing(False))
                 self.browser.close()
                 time.sleep(2)
                 self.browser.switch_to.window(window_name = self.browser.window_handles[0])
@@ -698,7 +684,7 @@ class Farmer(QObject):
         time.sleep(1)
         self.browser.switch_to.window(window_name = self.browser.window_handles[1])
         time.sleep(random.randint(13, 17) if not self.config["globalOptions"]["fast"] else random.randint(6, 9))
-        self.points.emit(self.get_points_from_bing())
+        self.points.emit(self.get_points_from_bing(False))
         self.browser.close()
         time.sleep(2)
         self.browser.switch_to.window(window_name = self.browser.window_handles[0])
@@ -720,7 +706,7 @@ class Farmer(QObject):
             time.sleep(2)
         self.browser.find_element(By.ID, "btoption" + str(random.randint(0, 1))).click()
         time.sleep(random.randint(10, 15) if not self.config["globalOptions"]["fast"] else 7)
-        self.points.emit(self.get_points_from_bing())
+        self.points.emit(self.get_points_from_bing(False))
         self.browser.close()
         time.sleep(2)
         self.browser.switch_to.window(window_name = self.browser.window_handles[0])
@@ -774,7 +760,7 @@ class Farmer(QObject):
                             return
                         break
                 time.sleep(5)
-            self.points.emit(self.get_points_from_bing())
+            self.points.emit(self.get_points_from_bing(False))
         time.sleep(5)
         self.browser.close()
         time.sleep(2)
@@ -806,7 +792,7 @@ class Farmer(QObject):
                         
                     self.browser.execute_script(f'document.evaluate("//*[@id=\'QuestionPane{str(question)}\']/div[1]/div[2]/a[{str(random.randint(1, 3))}]/div", document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue.click()')
                     time.sleep(8)
-                    self.points.emit(self.get_points_from_bing())
+                    self.points.emit(self.get_points_from_bing(False))
                 time.sleep(5)
                 self.browser.close()
                 time.sleep(2)
@@ -827,7 +813,7 @@ class Farmer(QObject):
         else :
             self.browser.find_element(By.ID, "rqAnswerOption1").click()
         time.sleep(10)
-        self.points.emit(self.get_points_from_bing())
+        self.points.emit(self.get_points_from_bing(False))
         self.browser.close()
         time.sleep(2)
         self.browser.switch_to.window(window_name = self.browser.window_handles[0])
@@ -873,7 +859,7 @@ class Farmer(QObject):
             elif (answer2Code == correctAnswerCode):
                 answer2.click()
                 time.sleep(15 if not self.config["globalOptions"]["fast"] else 7)
-            self.points.emit(self.get_points_from_bing())
+            self.points.emit(self.get_points_from_bing(False))
 
         time.sleep(5)
         self.browser.close()
@@ -1009,7 +995,7 @@ class Farmer(QObject):
         time.sleep(1)
         self.browser.switch_to.window(window_name = self.browser.window_handles[1])
         time.sleep(random.randint(13, 17) if not self.config["globalOptions"]["fast"] else random.randint(5, 8))
-        self.points.emit(self.get_points_from_bing())
+        self.points.emit(self.get_points_from_bing(False))
         self.browser.close()
         time.sleep(2)
         self.browser.switch_to.window(window_name = self.browser.window_handles[0])
@@ -1053,7 +1039,7 @@ class Farmer(QObject):
                             return
                         break
                 time.sleep(5)
-            self.points.emit(self.get_points_from_bing())
+            self.points.emit(self.get_points_from_bing(False))
         time.sleep(5)
         self.browser.close()
         time.sleep(2)
@@ -1071,7 +1057,7 @@ class Farmer(QObject):
             self.browser.execute_script(f'document.evaluate("//*[@id=\'QuestionPane{str(question)}\']/div[1]/div[2]/a[{str(random.randint(1, 3))}]/div", document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue.click()')
             time.sleep(8 if not self.config["globalOptions"]["fast"] else 5)
         time.sleep(5)
-        self.points.emit(self.get_points_from_bing())
+        self.points.emit(self.get_points_from_bing(False))
         self.browser.close()
         time.sleep(2)
         self.browser.switch_to.window(window_name=self.browser.window_handles[0])
@@ -1110,7 +1096,7 @@ class Farmer(QObject):
             elif (answer2Code == correctAnswerCode):
                 answer2.click()
                 time.sleep(8 if not self.config["globalOptions"]["fast"] else 5)
-            self.points.emit(self.get_points_from_bing())
+            self.points.emit(self.get_points_from_bing(False))
 
         time.sleep(5)
         self.browser.close()
@@ -1180,13 +1166,25 @@ class Farmer(QObject):
             remainingMobile = int((targetMobile - progressMobile) / searchPoints)
         return remainingDesktop, remainingMobile
     
-    def get_points_from_bing(self):
-        try:
-            points = int(self.browser.find_element(By.ID, 'id_rc').get_attribute('innerHTML'))
-        except ValueError:
-            points = int(self.browser.find_element(By.ID, 'id_rc').get_attribute('innerHTML').replace(",", ""))
-        finally:
-            return points
+    def get_points_from_bing(self, isMobile: bool = False):
+        if not isMobile:
+            try:
+                points = int(self.browser.find_element(By.ID, 'id_rc').get_attribute('innerHTML'))
+            except ValueError:
+                points = int(self.browser.find_element(By.ID, 'id_rc').get_attribute('innerHTML').replace(",", ""))
+        else:
+            try:
+                self.browser.find_element(By.ID, 'mHamburger').click()
+            except UnexpectedAlertPresentException:
+                try:
+                    self.browser.switch_to.alert.accept()
+                    time.sleep(1)
+                    self.browser.find_element(By.ID, 'mHamburger').click()
+                except NoAlertPresentException :
+                    pass
+            time.sleep(1)
+            points = int(self.browser.find_element(By.ID, 'fly_id_rc').get_attribute('innerHTML'))
+        return points
     
     def perform_run(self):
         """Check whether timer is set to run it at time else run immediately"""
@@ -1334,20 +1332,29 @@ class Farmer(QObject):
                     self.update_logs()
                     self.clean_logs()
                     break
+                
+                except (InvalidSessionIdException, MaxRetryError, NewConnectionError):
+                    if isinstance(self.browser, WebDriver):
+                        self.browser.quit()
+                    if self.ui.farmer_thread.isInterruptionRequested():
+                        self.section.emit("Stopping...")
+                        self.detail.emit("-")
+                        self.finished.emit()
+                        self.ui.enable_elements()
+                        return None
+                    self.check_internet_connection()
                     
                 except (Exception, FunctionTimedOut) as e:
                     if isinstance(self.browser, WebDriver):
                         self.browser.quit()
                     self.starting_points = None
                     self.browser = None
-                    if self.ui.farmer_thread.isInterruptionRequested():
-                        self.finished.emit()
-                        return None
                     if self.config["globalOptions"]["saveErrors"]:
                         with open(f"{Path.cwd()}/errors.txt", "a") as f:
                             f.write(f"\n-------------------{datetime.now()}-------------------\r\n")
                             f.write(f"{str(e)}\n")
                     self.check_internet_connection()
+                    
         else:
             if self.ui.send_to_telegram_checkbox.isChecked():
                 message = self.create_message()
