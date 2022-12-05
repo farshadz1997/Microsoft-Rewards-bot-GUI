@@ -1180,7 +1180,7 @@ class Farmer(QObject):
                     self.browser.switch_to.alert.accept()
                     time.sleep(1)
                     self.browser.find_element(By.ID, 'mHamburger').click()
-                except NoAlertPresentException :
+                except NoAlertPresentException:
                     pass
             time.sleep(1)
             points = int(self.browser.find_element(By.ID, 'fly_id_rc').get_attribute('innerHTML'))
@@ -1250,7 +1250,7 @@ class Farmer(QObject):
                         
 
                     if self.config["farmOptions"]["searchMobile"] and not self.logs[self.current_account]["Mobile searches"]:
-                        self.browser_setup(True, self.MOBILE_USER_AGENT)
+                        self.browser_setup(True, account.get('mobile_user_agent', self.MOBILE_USER_AGENT))
                         self.stop_button_enabled.emit(True)
                         self.login(account["username"], account["password"], True)
                         self.browser.get("https://rewards.microsoft.com/")
@@ -1336,9 +1336,8 @@ class Farmer(QObject):
                 except (InvalidSessionIdException, MaxRetryError, NewConnectionError):
                     if isinstance(self.browser, WebDriver):
                         self.browser.quit()
+                        self.browser = None
                     if self.ui.farmer_thread.isInterruptionRequested():
-                        self.section.emit("Stopping...")
-                        self.detail.emit("-")
                         self.finished.emit()
                         self.ui.enable_elements()
                         return None

@@ -1,6 +1,7 @@
 from PyQt5 import QtCore, QtGui, QtWidgets
 import json
 from pathlib import Path
+import webbrowser
 
 from .farmer import Farmer
 from selenium.webdriver.chrome.webdriver import WebDriver
@@ -9,7 +10,7 @@ from selenium.webdriver.chrome.webdriver import WebDriver
 class UserInterface(object):
     def __init__(self):
         self.default_config = {
-            "accountsPath": "",
+            "accountsPath": None,
             "time": "12:00 AM",
             "globalOptions": {
                 "headless": False,
@@ -315,8 +316,9 @@ class UserInterface(object):
         self.start_button.clicked.connect(self.start)
         self.stop_button.clicked.connect(self.stop)
         self.open_accounts_button.clicked.connect(self.open_accounts)
+        self.creator_label.linkActivated['QString'].connect(lambda: webbrowser.open("https://github.com/farshadz1997/"))
         QtCore.QMetaObject.connectSlotsByName(MainWindow)
-        
+    
     def disable_elements(self):
         self.start_button.setEnabled(False)
         self.global_options_groupbox.setEnabled(False)
@@ -403,6 +405,8 @@ class UserInterface(object):
         self.farmer_thread.start()
 
     def stop(self):
+        self.section.setText("Stopping...")
+        self.detail.setText("-")
         self.stop_button.setEnabled(False)
         if isinstance(self.farmer.browser, WebDriver) or self.farmer.browser is not None:
             self.farmer.browser.quit()
@@ -425,7 +429,7 @@ class UserInterface(object):
             self.send_info(
                 "Info",
                 "accounts file not found",
-                "accounts file not found," f"a new one has been created at '{str(accounts_path)}'. Edit it then open it.",
+                "accounts file not found," f"a new one has been created at '{str(accounts_path)}'. Edit it with your infos then open it in Farmer.",
             )
             self.accounts = self.sample_accounts
         else:
@@ -471,13 +475,16 @@ class UserInterface(object):
             with open(f"{Path(__file__).parent.parent}/config.json", "w") as f:
                 f.write(json.dumps(self.default_config, indent=4))
             self.config = self.default_config
-            return self.config
         else:
-            if Path(config["accountsPath"]).is_file():
-                self.accounts = self.get_accounts(config["accountsPath"])
+            self.config = config
+        finally:
+            if self.config.get("accountsPath") is not None:
+                if Path(self.config.get("accountsPath")).is_file():
+                    self.accounts = self.get_accounts(config["accountsPath"])
+                else:
+                    self.get_accounts()
             else:
                 self.get_accounts()
-            self.config = config
             return self.config
 
     def set_config(self):
@@ -525,7 +532,7 @@ class UserInterface(object):
         MainWindow.setWindowTitle(_translate("MainWindow", "Microsoft Rewards Farmer"))
         self.accounts_label.setText(_translate("MainWindow", "**Accounts:**"))
         self.open_accounts_button.setText(_translate("MainWindow", "Open"))
-        self.creator_label.setText(_translate("MainWindow", "By [Farshad](https://github.com/farshadz1997/)"))
+        self.creator_label.setText(_translate("MainWindow", "By [FarshadZ1997](https://github.com/farshadz1997/)"))
         self.title_label.setText(_translate("MainWindow", "Microsoft Rewards Farmer"))
         self.set_time_label.setText(_translate("MainWindow", "**Set time**:"))
         self.timeEdit.setDisplayFormat(_translate("MainWindow", "hh:mm AP"))
