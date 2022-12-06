@@ -1,0 +1,22 @@
+{
+    "accountsPath": null,
+    "time": "12:00 AM",
+    "globalOptions": {
+        "headless": false,
+        "session": false,
+        "fast": false,
+        "saveErrors": false,
+        "shutdownSystem": false
+    },
+    "farmOptions": {
+        "dailyQuests": false,
+        "punchCards": false,
+        "moreActivities": false,
+        "searchPC": false,
+        "searchMobile": false
+    },
+    "telegram": {
+        "token": "",
+        "chatID": ""
+    }
+}
