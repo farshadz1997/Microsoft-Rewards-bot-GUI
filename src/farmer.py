@@ -829,8 +829,8 @@ class Farmer(QObject):
         if self.is_element_exists(By.ID, 'bnp_container'):
             self.browser.find_element(By.ID, 'bnp_btn_accept').click()
             time.sleep(2)
-        if not self.wait_until_quiz_loads(self.browser):
-            self.reset_tabs(self.browser)
+        if not self.wait_until_quiz_loads():
+            self.reset_tabs()
             return
         self.browser.find_element(By.XPATH, '//*[@id="rqStartQuiz"]').click()
         self.wait_until_visible(By.XPATH, '//*[@id="currentQuestionContainer"]/div/div[1]', 10)
@@ -983,7 +983,7 @@ class Farmer(QObject):
                         dest = new_url + userCode + path.split(userCode)[1]
                     self.complete_punch_card(dest, punchCard['childPromotions'])
             except:
-                self.reset_tabs(self.browser)
+                self.reset_tabs()
         time.sleep(2)
         self.browser.get('https://rewards.microsoft.com/dashboard/')
         time.sleep(2)
@@ -1069,7 +1069,7 @@ class Farmer(QObject):
         self.browser.switch_to.window(window_name=self.browser.window_handles[1])
         time.sleep(8 if not self.config["globalOptions"]["fast"] else 5)
         if not self.wait_until_quiz_loads():
-            self.reset_tabs(self.browser)
+            self.reset_tabs()
             return
         CrrentQuestionNumber = self.browser.execute_script("return _w.rewardsQuizRenderInfo.currentQuestionNumber")
         NumberOfQuestionsLeft = 10 - CrrentQuestionNumber + 1
