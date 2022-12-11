@@ -96,14 +96,14 @@ class Farmer(QObject):
     
     def check_internet_connection(self):
         system = platform.system()
-        si = subprocess.STARTUPINFO()
-        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         while True:
             try:
                 if system == "Windows":
+                    si = subprocess.STARTUPINFO()
+                    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                     subprocess.check_output(["ping", "-n", "1", "8.8.8.8"], timeout=5, startupinfo=si)
                 elif system == "Linux":
-                    subprocess.check_output(["ping", "-c", "1", "8.8.8.8"], timeout=5, startupinfo=si)
+                    subprocess.check_output(["ping", "-c", "1", "8.8.8.8"], timeout=5)
                 self.section.emit("-")
                 self.detail.emit("-")
                 return None
@@ -355,7 +355,7 @@ class Farmer(QObject):
             pass
         # Wait complete loading
         try:
-            self.wait_until_visible(self.browser, By.ID, 'KmsiCheckboxField', 10)
+            self.wait_until_visible(By.ID, 'KmsiCheckboxField', 10)
         except (TimeoutException) as e:
             pass
         # Click next
@@ -1167,23 +1167,26 @@ class Farmer(QObject):
         return remainingDesktop, remainingMobile
     
     def get_points_from_bing(self, isMobile: bool = False):
-        if not isMobile:
-            try:
-                points = int(self.browser.find_element(By.ID, 'id_rc').get_attribute('innerHTML'))
-            except ValueError:
-                points = int(self.browser.find_element(By.ID, 'id_rc').get_attribute('innerHTML').replace(",", ""))
-        else:
-            try:
-                self.browser.find_element(By.ID, 'mHamburger').click()
-            except UnexpectedAlertPresentException:
+        try:
+            if not isMobile:
                 try:
-                    self.browser.switch_to.alert.accept()
-                    time.sleep(1)
+                    points = int(self.browser.find_element(By.ID, 'id_rc').get_attribute('innerHTML'))
+                except ValueError:
+                    points = int(self.browser.find_element(By.ID, 'id_rc').get_attribute('innerHTML').replace(",", ""))
+            else:
+                try:
                     self.browser.find_element(By.ID, 'mHamburger').click()
-                except NoAlertPresentException:
-                    pass
-            time.sleep(1)
-            points = int(self.browser.find_element(By.ID, 'fly_id_rc').get_attribute('innerHTML'))
+                except UnexpectedAlertPresentException:
+                    try:
+                        self.browser.switch_to.alert.accept()
+                        time.sleep(1)
+                        self.browser.find_element(By.ID, 'mHamburger').click()
+                    except NoAlertPresentException:
+                        pass
+                time.sleep(1)
+                points = int(self.browser.find_element(By.ID, 'fly_id_rc').get_attribute('innerHTML'))
+        except NoSuchElementException:
+            points = self.points_counter
         return points
     
     def perform_run(self):
