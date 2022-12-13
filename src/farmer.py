@@ -549,6 +549,10 @@ class Farmer(QObject):
     def get_account_points(self) -> int:
         return self.get_dashboard_data()['userStatus']['availablePoints']
     
+    def get_redeem_goal(self):
+        user_status = self.get_dashboard_data()["userStatus"]
+        return (user_status["redeemGoal"]["title"], user_status["redeemGoal"]["price"])
+    
     def get_ccode_lang_and_offset(self) -> tuple:
         try:
             nfo = ipapi.location()
@@ -1225,6 +1229,7 @@ class Farmer(QObject):
                         
                         self.browser.get("https://rewards.microsoft.com/")
                         self.starting_points = self.get_account_points()
+                        redeem_goal_title, redeem_goal_price = self.get_redeem_goal()
                         self.points_counter = self.starting_points
                         self.points.emit(self.points_counter)
 
@@ -1257,6 +1262,7 @@ class Farmer(QObject):
                         self.stop_button_enabled.emit(True)
                         self.login(account["username"], account["password"], True)
                         self.browser.get("https://rewards.microsoft.com/")
+                        redeem_goal_title, redeem_goal_price = self.get_redeem_goal()
                         if not self.starting_points:
                             self.starting_points = self.get_account_points()
                         remainingSearches = self.get_remaining_searches()[1]
@@ -1272,6 +1278,10 @@ class Farmer(QObject):
                     self.finished_accounts.append(account["username"])
                     self.logs[account["username"]]["Today's points"] = self.points_counter - self.starting_points
                     self.logs[account["username"]]["Points"] = self.points_counter
+                    
+                    if self.ui.send_to_telegram_checkbox.isChecked() and redeem_goal_title != "" and redeem_goal_price <= self.points_counter:
+                        self.send_report_to_telegram(f"🎁 {self.current_account} is ready to redeem {redeem_goal_title} for {redeem_goal_price} points.")
+                        
                     self.clean_logs()
                     self.update_logs()
 
