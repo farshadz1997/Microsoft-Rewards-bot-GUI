@@ -40,8 +40,8 @@ class Farmer(QObject):
     stop_button_enabled = pyqtSignal(bool)
     accounts_info_sig = pyqtSignal()
     
-    PC_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36 Edg/107.0.1418.24'
-    MOBILE_USER_AGENT = 'Mozilla/5.0 (Linux; Android 12; SM-N9750) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Mobile Safari/537.36 EdgA/107.0.1418.28'
+    PC_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36 Edg/108.0.1462.46'
+    MOBILE_USER_AGENT = 'Mozilla/5.0 (Linux; Android 12; SM-N9750) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.5359.79 Mobile Safari/537.36 EdgA/107.0.1418.62'
     
     def __init__(self, ui):
         super(Farmer, self).__init__()
@@ -291,6 +291,10 @@ class Farmer(QObject):
                 time.sleep(2)
                 self.browser.find_element(By.ID, 'iNext').click()
                 time.sleep(5)
+            if self.browser.title == 'Is your security info still accurate?' or self.is_element_exists(By.ID, 'iLooksGood'):
+                time.sleep(2)
+                self.browser.find_element(By.ID, 'iLooksGood').click()
+                time.sleep(5)
             if self.browser.title == 'Microsoft account | Home' or self.is_element_exists(By.ID, 'navs_container'):
                 self.detail.emit("Microsoft Rewards...")
                 self.rewards_login()
@@ -332,7 +336,11 @@ class Farmer(QObject):
                 time.sleep(2)
                 self.browser.find_element(By.ID, 'iNext').click()
                 time.sleep(5)
-            if self.config.get("session", False):
+            if self.browser.title == 'Is your security info still accurate?' or self.is_element_exists(By.ID, 'iLooksGood'):
+                time.sleep(2)
+                self.browser.find_element(By.ID, 'iLooksGood').click()
+                time.sleep(5)
+            if self.config["globalOptions"]["session"]:
                 # Click Yes to stay signed in.
                 self.browser.find_element(By.ID, 'idSIButton9').click()
             else:
