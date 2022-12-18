@@ -1288,7 +1288,11 @@ class Farmer(QObject):
                     self.logs[account["username"]]["Points"] = self.points_counter
                     
                     if self.ui.send_to_telegram_checkbox.isChecked() and redeem_goal_title != "" and redeem_goal_price <= self.points_counter:
-                        self.send_report_to_telegram(f"🎁 {self.current_account} is ready to redeem {redeem_goal_title} for {redeem_goal_price} points.")
+                        redeem_count = self.points_counter // redeem_goal_price
+                        if redeem_count > 1:
+                            self.send_report_to_telegram(f"🎁 {self.current_account} is ready to redeem {redeem_count} * {redeem_goal_title} for {redeem_goal_price} points.")
+                        else:
+                            self.send_report_to_telegram(f"🎁 {self.current_account} is ready to redeem {redeem_goal_title} for {redeem_goal_price} points.")
                         
                     self.clean_logs()
                     self.update_logs()
