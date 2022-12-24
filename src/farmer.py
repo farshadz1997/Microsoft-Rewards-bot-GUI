@@ -41,7 +41,7 @@ class Farmer(QObject):
     accounts_info_sig = pyqtSignal()
     
     PC_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36 Edg/108.0.1462.46'
-    MOBILE_USER_AGENT = 'Mozilla/5.0 (Linux; Android 12; SM-N9750) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.5359.79 Mobile Safari/537.36 EdgA/107.0.1418.62'
+    MOBILE_USER_AGENT = 'Mozilla/5.0 (Linux; Android 12; SM-N9750) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Mobile Safari/537.36 EdgA/108.0.1462.48'
     
     def __init__(self, ui):
         super(Farmer, self).__init__()
@@ -98,6 +98,10 @@ class Farmer(QObject):
         system = platform.system()
         while True:
             try:
+                if self.ui.farmer_thread.isInterruptionRequested():
+                    self.finished.emit()
+                    self.ui.enable_elements()
+                    return False
                 if system == "Windows":
                     si = subprocess.STARTUPINFO()
                     si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
@@ -106,7 +110,7 @@ class Farmer(QObject):
                     subprocess.check_output(["ping", "-c", "1", "8.8.8.8"], timeout=5)
                 self.section.emit("-")
                 self.detail.emit("-")
-                return None
+                return True
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
                 self.section.emit("No internet connection...")
                 self.detail.emit("Checking...")
@@ -465,11 +469,10 @@ class Farmer(QObject):
                 time.sleep(3)
             except:
                 if str(self.browser.current_url).split('?')[0] == "https://account.live.com/proofs/Add":
-                    # prRed('[LOGIN] Please complete the Security Check on ' + self.current_account)
                     self.finished_accounts.append(self.current_account)
                     self.logs[self.current_account]['Last check'] = 'Requires manual check!'
                     self.update_logs()
-                    exit()
+                    raise Exception
         time.sleep(5)
         # Refresh page
         self.browser.get('https://bing.com/')
@@ -1297,7 +1300,7 @@ class Farmer(QObject):
                     self.clean_logs()
                     self.update_logs()
 
-                    self.points.emit(self.points_counter)
+                    self.points.emit("-")
                     self.accounts_info_sig.emit()
                     
                     break
@@ -1314,7 +1317,6 @@ class Farmer(QObject):
                     self.browser = None
                     self.logs[self.current_account]['Last check'] = 'Your account has been locked !'
                     self.locked_accounts.append(self.current_account)
-                    self.finished_accounts.append(self.current_account)
                     self.update_logs()
                     self.clean_logs()
                     break
@@ -1366,7 +1368,13 @@ class Farmer(QObject):
                         self.finished.emit()
                         self.ui.enable_elements()
                         return None
-                    self.check_internet_connection()
+                    internet = self.check_internet_connection()
+                    if internet:
+                        pass
+                    else:
+                        self.finished.emit()
+                        self.ui.enable_elements()
+                        return None
                     
                 except (Exception, FunctionTimedOut) as e:
                     if isinstance(self.browser, WebDriver):
@@ -1377,7 +1385,13 @@ class Farmer(QObject):
                         with open(f"{Path.cwd()}/errors.txt", "a") as f:
                             f.write(f"\n-------------------{datetime.now()}-------------------\r\n")
                             f.write(f"{str(e)}\n")
-                    self.check_internet_connection()
+                    internet = self.check_internet_connection()
+                    if internet:
+                        pass
+                    else:
+                        self.finished.emit()
+                        self.ui.enable_elements()
+                        return None
                     
         else:
             if self.ui.send_to_telegram_checkbox.isChecked():
