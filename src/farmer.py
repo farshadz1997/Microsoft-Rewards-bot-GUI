@@ -1300,7 +1300,7 @@ class Farmer(QObject):
                     self.clean_logs()
                     self.update_logs()
 
-                    self.points.emit("-")
+                    self.points.emit(0)
                     self.accounts_info_sig.emit()
                     
                     break
