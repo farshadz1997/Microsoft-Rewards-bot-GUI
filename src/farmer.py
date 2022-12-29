@@ -10,6 +10,7 @@ from pathlib import Path
 from datetime import date, datetime, timedelta
 from notifiers import get_notifier
 from PyQt5.QtCore import QObject, pyqtSignal, QTime
+import copy
 from .exceptions import *
 
 import ipapi
@@ -70,7 +71,17 @@ class Farmer(QObject):
                 status = '✅ Farmed'
                 new_points = value[1]["Today's points"]
                 total_points = value[1]["Points"]
-                message += f"{index}. {value[0]}\n📝 Status: {status}\n⭐️ Today's points: {new_points}\n🏅 Total points: {total_points}\n\n"        
+                message += f"{index}. {value[0]}\n📝 Status: {status}\n⭐️ Earned points: {new_points}\n🏅 Total points: {total_points}\n"
+                redeem_title = value[1].get("Redeem goal title", None)
+                if redeem_title:
+                    redeem_price = value[1].get("Redeem goal price")
+                    redeem_count = total_points // redeem_price
+                    if redeem_count > 1:
+                        message += f"🎁 Ready to redeem: {redeem_title} for {redeem_price} points ({redeem_count}x)\n\n"
+                    else:
+                        message += f"🎁 Ready to redeem: {redeem_title} for {redeem_price} points\n\n"
+                else:   
+                    message += "\n"
             elif value[1]['Last check'] == 'Your account has been suspended':
                 status = '❌ Suspended'
                 message += f"{index}. {value[0]}\n📝 Status: {status}\n\n"
@@ -87,7 +98,17 @@ class Farmer(QObject):
                 status = f'Farmed on {value[1]["Last check"]}'
                 new_points = value[1]["Today's points"]
                 total_points = value[1]["Points"]
-                message += f"{index}. {value[0]}\n📝 Status: {status}\n⭐️ Earned points: {new_points}\n🏅 Total points: {total_points}\n\n"  
+                message += f"{index}. {value[0]}\n📝 Status: {status}\n⭐️ Earned points: {new_points}\n🏅 Total points: {total_points}\n"
+                redeem_title = value[1].get("Redeem goal title", None)
+                if redeem_title:
+                    redeem_price = value[1].get("Redeem goal price")
+                    redeem_count = total_points // redeem_price
+                    if redeem_count > 1:
+                        message += f"🎁 Ready to redeem: {redeem_title} for {redeem_price} points ({redeem_count}x)\n\n"
+                    else:
+                        message += f"🎁 Ready to redeem: {redeem_title} for {redeem_price} points\n\n"
+                else:   
+                    message += "\n"
         return message
 
     def send_report_to_telegram(self, message):
@@ -180,8 +201,13 @@ class Farmer(QObject):
         
     def update_logs(self):
         """Update logs with new data"""
+        logs = copy.deepcopy(self.logs)
+        for account in logs:
+            if account == "Elapsed time": continue
+            logs[account].pop("Redeem goal title", None)
+            logs[account].pop("Redeem goal price", None)
         with open(f'{self.accounts_path.parent}/Logs_{self.accounts_path.stem}.txt', 'w') as file:
-            file.write(json.dumps(self.logs, indent = 4))
+            file.write(json.dumps(logs, indent = 4))
 
     def clean_logs(self):
         """Delete Daily, Punch cards, More promotions, PC searches and Mobile searches from logs"""
@@ -1291,11 +1317,8 @@ class Farmer(QObject):
                     self.logs[account["username"]]["Points"] = self.points_counter
                     
                     if self.ui.send_to_telegram_checkbox.isChecked() and redeem_goal_title != "" and redeem_goal_price <= self.points_counter:
-                        redeem_count = self.points_counter // redeem_goal_price
-                        if redeem_count > 1:
-                            self.send_report_to_telegram(f"🎁 {self.current_account} is ready to redeem {redeem_count} * {redeem_goal_title} for {redeem_goal_price} points.")
-                        else:
-                            self.send_report_to_telegram(f"🎁 {self.current_account} is ready to redeem {redeem_goal_title} for {redeem_goal_price} points.")
+                        self.logs[self.current_account]["Redeem goal title"] = redeem_goal_title
+                        self.logs[self.current_account]["Redeem goal price"] = redeem_goal_price
                         
                     self.clean_logs()
                     self.update_logs()
@@ -1348,7 +1371,7 @@ class Farmer(QObject):
                     self.browser.quit()
                     self.browser = None
                     self.finished.emit()
-                    self.section.emit("Not available in you region")
+                    self.section.emit("Not available in your region")
                     return None
                 
                 except UnhandledException:
