@@ -43,6 +43,7 @@ class Farmer(QObject):
     
     PC_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36 Edg/108.0.1462.46'
     MOBILE_USER_AGENT = 'Mozilla/5.0 (Linux; Android 12; SM-N9750) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Mobile Safari/537.36 EdgA/108.0.1462.48'
+    base_url = "https://rewards.microsoft.com"
     
     def __init__(self, ui):
         super(Farmer, self).__init__()
@@ -64,23 +65,27 @@ class Farmer(QObject):
         self.lang, self.geo, self.tz = self.get_ccode_lang_and_offset()
     
     def create_message(self):
+        """Create message from logs to send to Telegram"""
         today = date.today().strftime("%d/%m/%Y")
         message = f'📅 Daily report {today}\n\n'
         for index, value in enumerate(self.logs.items(), 1):
+            redeem_message = None
+            if value[1].get("Redeem goal title", None):
+                redeem_title = value[1].get("Redeem goal title", None)
+                redeem_price = value[1].get("Redeem goal price")
+                redeem_count = total_points // redeem_price
+                if redeem_count > 1:
+                    redeem_message = f"🎁 Ready to redeem: {redeem_title} for {redeem_price} points ({redeem_count}x)\n\n"
+                else:
+                    redeem_message = f"🎁 Ready to redeem: {redeem_title} for {redeem_price} points\n\n"
             if value[1]['Last check'] == str(date.today()):
                 status = '✅ Farmed'
                 new_points = value[1]["Today's points"]
                 total_points = value[1]["Points"]
                 message += f"{index}. {value[0]}\n📝 Status: {status}\n⭐️ Earned points: {new_points}\n🏅 Total points: {total_points}\n"
-                redeem_title = value[1].get("Redeem goal title", None)
-                if redeem_title:
-                    redeem_price = value[1].get("Redeem goal price")
-                    redeem_count = total_points // redeem_price
-                    if redeem_count > 1:
-                        message += f"🎁 Ready to redeem: {redeem_title} for {redeem_price} points ({redeem_count}x)\n\n"
-                    else:
-                        message += f"🎁 Ready to redeem: {redeem_title} for {redeem_price} points\n\n"
-                else:   
+                if redeem_message:
+                    message += redeem_message
+                else:
                     message += "\n"
             elif value[1]['Last check'] == 'Your account has been suspended':
                 status = '❌ Suspended'
@@ -99,15 +104,9 @@ class Farmer(QObject):
                 new_points = value[1]["Today's points"]
                 total_points = value[1]["Points"]
                 message += f"{index}. {value[0]}\n📝 Status: {status}\n⭐️ Earned points: {new_points}\n🏅 Total points: {total_points}\n"
-                redeem_title = value[1].get("Redeem goal title", None)
-                if redeem_title:
-                    redeem_price = value[1].get("Redeem goal price")
-                    redeem_count = total_points // redeem_price
-                    if redeem_count > 1:
-                        message += f"🎁 Ready to redeem: {redeem_title} for {redeem_price} points ({redeem_count}x)\n\n"
-                    else:
-                        message += f"🎁 Ready to redeem: {redeem_title} for {redeem_price} points\n\n"
-                else:   
+                if redeem_message:
+                    message += redeem_message
+                else:
                     message += "\n"
         return message
 
@@ -412,7 +411,7 @@ class Farmer(QObject):
 
     def rewards_login(self):
         """Login into Microsoft rewards and check account"""
-        self.browser.get('https://rewards.microsoft.com/')
+        self.browser.get(self.base_url)
         try:
             time.sleep(10 if not self.config["globalOptions"]["fast"] else 5)
             self.browser.find_element(By.ID, 'raf-signin-link-id').click()
@@ -635,9 +634,9 @@ class Farmer(QObject):
 
             self.browser.switch_to.window(curr)
             time.sleep(0.5)
-            self.browser.get('https://rewards.microsoft.com/')
+            self.browser.get(self.base_url)
         except:
-            self.browser.get('https://rewards.microsoft.com/')
+            self.browser.get(self.base_url)
             
     def get_answer_code(self, key: str, string: str) -> str:
         """Get answer code for this or that quiz"""
@@ -706,7 +705,7 @@ class Farmer(QObject):
         try:
             self.detail.emit("Promotional items")
             item = self.get_dashboard_data()["promotionalItem"]
-            if (item["pointProgressMax"] == 100 or item["pointProgressMax"] == 200) and item["complete"] == False and item["destinationUrl"] == "https://rewards.microsoft.com/":
+            if (item["pointProgressMax"] == 100 or item["pointProgressMax"] == 200) and item["complete"] == False and item["destinationUrl"] == self.base_url:
                 self.browser.find_element(By.XPATH, '//*[@id="promo-item"]/section/div/div/div/a').click()
                 time.sleep(1)
                 self.browser.switch_to.window(window_name = self.browser.window_handles[1])
@@ -908,7 +907,7 @@ class Farmer(QObject):
         self.browser.switch_to.window(window_name=self.browser.window_handles[0])
         time.sleep(2)
     
-    def complete_daily_set(self, ):
+    def complete_daily_set(self):
         self.section.emit("Daily Set")
         d = self.get_dashboard_data()
         todayDate = datetime.today().strftime('%m/%d/%Y')
@@ -1004,7 +1003,7 @@ class Farmer(QObject):
                     self.browser.refresh()
                     break
                 
-    def complete_punch_cards(self, ):
+    def complete_punch_cards(self):
         punchCards = self.get_dashboard_data()['punchCards']
         self.section.emit("Punch cards")
         self.detail.emit("-")
@@ -1022,11 +1021,11 @@ class Farmer(QObject):
                         new_url = 'https://account.microsoft.com/rewards/dashboard/'
                         userCode = path[:4]
                         dest = new_url + userCode + path.split(userCode)[1]
-                    self.complete_punch_card(dest, punchCard['childPromotions'])
+                    self.complete_punch_card(url, punchCard['childPromotions'])
             except:
                 self.reset_tabs()
         time.sleep(2)
-        self.browser.get('https://rewards.microsoft.com/dashboard/')
+        self.browser.get(self.base_url)
         time.sleep(2)
         self.logs[self.current_account]['Punch cards'] = True
         self.update_logs()
@@ -1171,7 +1170,7 @@ class Farmer(QObject):
                             self.detail.emit("Search card")
                             self.complete_more_promotion_search(i)
                 if promotion['complete'] == False and promotion['pointProgressMax'] == 100 and promotion['promotionType'] == "" \
-                    and promotion['destinationUrl'] == "https://rewards.microsoft.com":
+                    and promotion['destinationUrl'] == self.base_url:
                         self.detail.emit("Search card")
                         self.complete_more_promotion_search(i)
             except:
@@ -1264,7 +1263,7 @@ class Farmer(QObject):
                         self.login(account["username"], account["password"])
                         self.detail.emit("Logged in")
                         
-                        self.browser.get("https://rewards.microsoft.com/")
+                        self.browser.get(self.base_url)
                         self.starting_points = self.get_account_points()
                         redeem_goal_title, redeem_goal_price = self.get_redeem_goal()
                         self.points_counter = self.starting_points
@@ -1298,7 +1297,7 @@ class Farmer(QObject):
                         self.browser_setup(True, account.get('mobile_user_agent', self.MOBILE_USER_AGENT))
                         self.stop_button_enabled.emit(True)
                         self.login(account["username"], account["password"], True)
-                        self.browser.get("https://rewards.microsoft.com/")
+                        self.browser.get(self.base_url)
                         redeem_goal_title, redeem_goal_price = self.get_redeem_goal()
                         if not self.starting_points:
                             self.starting_points = self.get_account_points()
