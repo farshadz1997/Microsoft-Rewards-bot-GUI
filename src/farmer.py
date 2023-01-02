@@ -283,7 +283,7 @@ class Farmer(QObject):
         options.add_experimental_option("prefs", prefs)
         options.add_experimental_option("useAutomationExtension", False)
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        if self.config.get("headless", False):
+        if self.config.get("globalOptions", False).get("headless", False):
             options.add_argument("--headless")
         options.add_argument('log-level=3')
         options.add_argument("--start-maximized")
