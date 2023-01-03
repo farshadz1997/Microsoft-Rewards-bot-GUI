@@ -73,7 +73,7 @@ class Farmer(QObject):
             if value[1].get("Redeem goal title", None):
                 redeem_title = value[1].get("Redeem goal title", None)
                 redeem_price = value[1].get("Redeem goal price")
-                redeem_count = total_points // redeem_price
+                redeem_count = value[1]["Points"] // redeem_price
                 if redeem_count > 1:
                     redeem_message = f"🎁 Ready to redeem: {redeem_title} for {redeem_price} points ({redeem_count}x)\n\n"
                 else:

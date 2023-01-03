@@ -26,7 +26,7 @@ class UserInterface(object):
                 "searchPC": False,
                 "searchMobile": False,
             },
-            "telegram": {"token": "", "chatID": ""},
+            "telegram": {"sendToTelegram": False, "token": "", "chatID": ""},
         }
         self.sample_accounts = [{"username": "Your Email", "password": "Your Password"}]
 
@@ -466,6 +466,25 @@ class UserInterface(object):
         msg.setInformativeText(detail)
         msg.setStandardButtons(QtWidgets.QMessageBox.Ok)
         msg.exec_()
+        
+    def validate_and_sync_config(self):
+        """Check if config.json is up to date with default_config"""
+        need_sync = False
+        for key, value in self.default_config.items():
+            if key not in self.config.keys() and type(key) != dict:
+                need_sync = True
+                self.config[key] = self.default_config[key]
+            if type(value) == dict:
+                if self.config[key].keys() == value.keys():
+                    continue
+                else:
+                    need_sync = True
+                    diffs = list(value.keys() - self.config[key].keys())
+                    for diff in diffs:
+                        self.config[key][diff] = value[diff]
+        if need_sync:
+            with open(f"{Path(__file__).parent.parent}/config.json", "w") as f:
+                f.write(json.dumps(self.config, indent=4))
 
     def get_config(self):
         """Get config from config.json or create it if it doesn't exist"""
@@ -478,6 +497,7 @@ class UserInterface(object):
         else:
             self.config = config
         finally:
+            self.validate_and_sync_config()
             if self.config.get("accountsPath") is not None:
                 if Path(self.config.get("accountsPath")).is_file():
                     self.accounts = self.get_accounts(config["accountsPath"])
@@ -502,6 +522,11 @@ class UserInterface(object):
         self.search_mobile_checkbox.setChecked(self.config["farmOptions"]["searchMobile"])
         self.api_key_lineedit.setText(self.config["telegram"]["token"])
         self.chat_id_lineedit.setText(self.config["telegram"]["chatID"])
+        self.send_to_telegram_checkbox.setChecked(self.config["telegram"]["sendToTelegram"])
+        if self.config["telegram"]["sendToTelegram"]:
+            self.api_key_lineedit.setEnabled(True)
+            self.chat_id_lineedit.setEnabled(True)
+            
 
     def save_config(self):
         """Save config to config.json"""
@@ -522,7 +547,11 @@ class UserInterface(object):
                 "searchPC": self.search_pc_checkbox.isChecked(),
                 "searchMobile": self.search_mobile_checkbox.isChecked(),
             },
-            "telegram": {"token": self.api_key_lineedit.text(), "chatID": self.chat_id_lineedit.text()},
+            "telegram": {
+                "sendToTelegram": self.send_to_telegram_checkbox.isChecked(),
+                "token": self.api_key_lineedit.text(),
+                "chatID": self.chat_id_lineedit.text()
+                },
         }
         with open(f"{Path(__file__).parent.parent}/config.json", "w") as f:
             f.write(json.dumps(self.config, indent=4))
